@@ -1,0 +1,56 @@
+// Schema Postgres compartilhado das camadas de infra do MonneyHub.
+// Ver docs/00-visao-geral-e-camadas-compartilhadas.md — Fase 0.
+
+generator client {
+  provider        = "prisma-client-js"
+  previewFeatures = ["multiSchema"]
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+  schemas  = ["core", "memory"]
+}
+
+// --- schema "core" ---------------------------------------------------
+// Base multi-tenant. O Gateway WhatsApp identifica o tenant a partir do
+// phone_number_id do webhook da Meta Business API contra esta tabela.
+
+model Tenant {
+  id                    String   @id @default(uuid())
+  name                  String
+  whatsappPhoneNumberId String   @unique
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+
+  @@schema("core")
+}
+
+// --- schema "memory" ---------------------------------------------------
+// Serviço de Memória/Contexto do Usuário (Camada C). Não pertence a
+// nenhum produto específico — PersonAI é o primeiro consumidor.
+
+enum MemoryKind {
+  PREFERENCE
+  FACT
+  INTERACTION
+
+  @@schema("memory")
+}
+
+model MemoryEntry {
+  id        String     @id @default(uuid())
+  tenantId  String
+  userId    String
+  kind      MemoryKind
+  key       String
+  value     Json
+  createdAt DateTime   @default(now())
+  updatedAt DateTime   @updatedAt
+
+  // PREFERENCE e FACT são chave única por usuário (upsert); INTERACTION
+  // usa uma key gerada por evento, então não colide.
+  @@unique([tenantId, userId, kind, key])
+  @@index([tenantId, userId])
+  @@schema("memory")
+}
