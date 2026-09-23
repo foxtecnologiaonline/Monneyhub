@@ -14,6 +14,7 @@
     "test": "vitest run",
     "worker:whatsapp": "tsx src/workers/whatsapp-inbound.worker.ts",
     "worker:forecast": "tsx src/workers/forecast-weekly.worker.ts",
+    "worker:forecast-alert": "tsx src/workers/forecast-alert.worker.ts",
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",
     "prisma:seed": "tsx prisma/seed.ts"

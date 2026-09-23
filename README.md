@@ -83,6 +83,11 @@ Prevê fluxo de caixa em 30/60/90 dias a partir do histórico transacional.
 - `npm run worker:forecast` — job semanal: exporta o histórico, roda a
   previsão, persiste a execução em `ForecastRun` e enfileira alerta na fila
   `forecast-alert` quando o P50 cruza zero dentro de 30 dias.
+- `npm run worker:forecast-alert` — consome a fila `forecast-alert` e entrega
+  o aviso por WhatsApp (`src/workers/forecast-alert.worker.ts`). Worker
+  separado do Gateway de propósito: fila e cadência diferentes (job semanal
+  vs. mensagem em tempo real), e uma falha aqui não pode derrubar o
+  atendimento conversacional.
 - **Histórico mínimo de 6 meses** (`src/lib/mei-oraculo/series.ts`). Abaixo
   disso o endpoint devolve `INSUFFICIENT_HISTORY` e nenhuma faixa — o
   produto não chuta.
@@ -104,6 +109,7 @@ Critérios de aceite do escopo, e onde estão cobertos:
 | --- | --- |
 | MAPE documentado e exposto internamente | `ForecastRun.mape` + campo `mape` no endpoint; `tests/mei-oraculo-backtest.test.ts` |
 | Alerta de saldo negativo com 15+ dias de antecedência em teste retroativo | `tests/mei-oraculo-backtest.test.ts`, `tests/mei-oraculo-forecast.test.ts` |
+| Alerta entregue ao usuário, não só detectado | `src/workers/forecast-alert.worker.ts` — consome `forecast-alert` e envia via Graph API |
 
 Fora de escopo no v1, conforme o doc: recomendação automática de ação
 financeira ("corte o gasto X").
@@ -130,9 +136,10 @@ npm run prisma:seed    # cria um tenant de exemplo pra testar o webhook local
 ## Rodando
 
 ```bash
-npm run dev             # Next.js (webhook + APIs internas)
-npm run worker:whatsapp # worker BullMQ (classificação + despacho + resposta)
-npm run worker:forecast # job semanal do MEI-Oráculo (previsão + alerta)
+npm run dev                   # Next.js (webhook + APIs internas)
+npm run worker:whatsapp       # worker BullMQ (classificação + despacho + resposta)
+npm run worker:forecast       # job semanal do MEI-Oráculo (previsão + detecção de alerta)
+npm run worker:forecast-alert # entrega o alerta detectado por WhatsApp
 ```
 
 ## Qualidade
