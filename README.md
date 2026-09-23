@@ -67,8 +67,22 @@ Escopo em [`docs/04-monneyhub-mei-oraculo.md`](./docs/04-monneyhub-mei-oraculo.m
   grava a rodada, com MAPE, para expor a precisão internamente.
 - `npm run worker:forecast` (`forecast-weekly.worker.ts`) — roda toda conta,
   persiste a rodada e enfileira (`forecast-alert`) quando há alerta.
+- `npm run worker:forecast-alert` (`forecast-alert.worker.ts`) — consome a
+  fila `forecast-alert` e entrega o aviso por WhatsApp via Graph API. Worker
+  separado do Gateway de propósito: fila e cadência diferentes (job semanal
+  vs. mensagem em tempo real), e uma falha aqui não pode derrubar o
+  atendimento conversacional.
 - `GET /api/forecast/:userId?tenantId=…` devolve o relatório completo —
   sempre **faixa** (P10/P50/P90) em 30/60/90 dias, nunca número único.
+
+> **Decisão de arquitetura a confirmar.** O doc de escopo nomeia Amazon
+> Forecast como provedor. A previsão foi implementada como baseline
+> estatístico local atrás de uma função única (`forecastBalance`), não
+> acoplada ao serviço gerenciado: assim o produto funciona e tem MAPE
+> medível hoje, e trocar pelo modelo gerenciado é só substituir essa função.
+> Vale confirmar a disponibilidade do Amazon Forecast pra conta nova antes
+> de fechar a decisão — se não estiver disponível, o SageMaker da Camada B
+> (Fase 3) atende sem mudar o produto em volta.
 
 ### MonneyHub Zap — assistente financeiro no WhatsApp
 
@@ -107,6 +121,7 @@ Critérios de aceite do escopo, e onde estão cobertos:
 | Latência < 5s incluindo Router API | orçamento explícito no handler: Router 3000ms + Content Safety 1200ms, via `AbortSignal.timeout` |
 | Erro percentual médio (MAPE) documentado e exposto internamente | `ForecastRun.mape`, medido por backtest real (`tests/mei-oraculo-backtest.test.ts`) |
 | Alerta de saldo negativo com ≥ 15 dias de antecedência | `meetsLeadRequirement` em `BacktestResult`, validado contra histórico real |
+| Alerta entregue ao usuário, não só detectado | `src/workers/forecast-alert.worker.ts` — consome `forecast-alert` e envia via Graph API |
 
 Fora de escopo no v1, conforme os docs: transação financeira real (PIX,
 pagamento) e recomendação automática de ação financeira.
@@ -124,9 +139,10 @@ npm run prisma:seed    # cria um tenant + conta de exemplo pra testar localmente
 ## Rodando
 
 ```bash
-npm run dev             # Next.js (webhook + APIs internas)
-npm run worker:whatsapp # gateway: classificação, despacho e resposta
-npm run worker:forecast # MEI-Oráculo: roda a previsão de todas as contas
+npm run dev                   # Next.js (webhook + APIs internas)
+npm run worker:whatsapp       # gateway: classificação, despacho e resposta
+npm run worker:forecast       # MEI-Oráculo: roda a previsão de todas as contas
+npm run worker:forecast-alert # entrega o alerta de saldo negativo por WhatsApp
 ```
 
 ## Qualidade

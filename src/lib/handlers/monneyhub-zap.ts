@@ -2,6 +2,7 @@ import type { HandlerResponse, ProductHandler } from "@/lib/handlers/types";
 import { classifyZapIntent, type ZapIntent } from "@/lib/monneyhub-zap/classify";
 import { withInvestmentDisclaimer } from "@/lib/monneyhub-zap/disclaimer";
 import { getAccountSummary, getRecentTransactions } from "@/lib/finance/queries";
+import { formatMoney } from "@/lib/finance/format";
 import { askMarketQuestion, isRouterConfigured } from "@/lib/perplexity/router";
 import { analyzeOutboundText } from "@/lib/safety/content-safety";
 import { buildForecastReport } from "@/lib/mei-oraculo/service";
@@ -18,23 +19,6 @@ const UNAVAILABLE_REPLY =
   "Não consegui buscar essa informação de mercado agora. Tenta de novo em instantes.";
 const BLOCKED_REPLY =
   "Prefiro não responder isso por aqui. Se for sobre sua conta, pergunta do saldo ou do extrato que eu te mostro.";
-
-/**
- * Intl e não concatenação manual: sem separador de milhar, "R$ 1200,50" é
- * o tipo de detalhe que faz o MEI desconfiar do número. O replace troca o
- * espaço não-quebrável que o Intl insere por espaço comum — WhatsApp lida
- * melhor, e é o que os testes leem.
- */
-function formatMoney(amount: string, currency: string): string {
-  const value = Number(amount);
-  try {
-    return new Intl.NumberFormat("pt-BR", { style: "currency", currency })
-      .format(value)
-      .replace(/ /g, " ");
-  } catch {
-    return `${currency} ${value.toFixed(2).replace(".", ",")}`;
-  }
-}
 
 /**
  * Previsão vem do MEI-Oráculo, não da Router API: é pergunta sobre o caixa
