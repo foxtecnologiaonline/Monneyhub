@@ -20,4 +20,19 @@ describe("classifyZapIntent", () => {
     expect(classifyZapIntent("quanto está o CDI hoje?")).toBe("MARKET");
     expect(classifyZapIntent("vale a pena abrir MEI esse ano?")).toBe("MARKET");
   });
+
+  it("identifica pedido de previsão", () => {
+    expect(classifyZapIntent("como fica meu fluxo de caixa nos próximos 30 dias?")).toBe(
+      "FORECAST",
+    );
+    expect(classifyZapIntent("vou ficar no vermelho esse mês?")).toBe("FORECAST");
+    expect(classifyZapIntent("vai dar pra pagar as contas mês que vem?")).toBe("FORECAST");
+    expect(classifyZapIntent("como fecha o mês?")).toBe("FORECAST");
+  });
+
+  it("trata previsão como previsão mesmo citando saldo/extrato", () => {
+    expect(classifyZapIntent("qual a previsão do meu saldo pros próximos 60 dias?")).toBe(
+      "FORECAST",
+    );
+  });
 });

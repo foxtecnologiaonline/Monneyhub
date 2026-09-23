@@ -2,9 +2,9 @@ import type { HandlerResponse, ProductHandler } from "@/lib/handlers/types";
 import { classifyZapIntent, type ZapIntent } from "@/lib/monneyhub-zap/classify";
 import { withInvestmentDisclaimer } from "@/lib/monneyhub-zap/disclaimer";
 import { getAccountSummary, getRecentTransactions } from "@/lib/finance/queries";
-import { getLatestForecast, type ForecastView } from "@/lib/monneyhub/forecast/read";
 import { askMarketQuestion, isRouterConfigured } from "@/lib/perplexity/router";
 import { analyzeOutboundText } from "@/lib/safety/content-safety";
+import { buildForecastReport } from "@/lib/mei-oraculo/service";
 
 // Orçamento de latência: o critério de aceite é resposta em menos de 5s
 // ponta a ponta. Router API fica com a maior fatia, Content Safety com o
@@ -19,11 +19,64 @@ const UNAVAILABLE_REPLY =
 const BLOCKED_REPLY =
   "Prefiro não responder isso por aqui. Se for sobre sua conta, pergunta do saldo ou do extrato que eu te mostro.";
 
-const CURRENCY_LABEL: Record<string, string> = { BRL: "R$", USD: "US$", EUR: "€" };
-
+/**
+ * Intl e não concatenação manual: sem separador de milhar, "R$ 1200,50" é
+ * o tipo de detalhe que faz o MEI desconfiar do número. O replace troca o
+ * espaço não-quebrável que o Intl insere por espaço comum — WhatsApp lida
+ * melhor, e é o que os testes leem.
+ */
 function formatMoney(amount: string, currency: string): string {
-  const symbol = CURRENCY_LABEL[currency] ?? currency;
-  return `${symbol} ${amount.replace(".", ",")}`;
+  const value = Number(amount);
+  try {
+    return new Intl.NumberFormat("pt-BR", { style: "currency", currency })
+      .format(value)
+      .replace(/ /g, " ");
+  } catch {
+    return `${currency} ${value.toFixed(2).replace(".", ",")}`;
+  }
+}
+
+/**
+ * Previsão vem do MEI-Oráculo, não da Router API: é pergunta sobre o caixa
+ * do próprio usuário, e mandar isso pra uma busca externa seria ao mesmo
+ * tempo inútil e vazamento de contexto.
+ *
+ * Sempre faixa, nunca número único — o doc do MEI-Oráculo é explícito em
+ * evitar falsa precisão. E nenhuma sugestão de ação: recomendar corte de
+ * gasto está fora de escopo do v1.
+ */
+async function buildForecastReply(message: Parameters<ProductHandler>[0]): Promise<string> {
+  const report = await buildForecastReport(message.tenantId, message.userId);
+
+  if (report.status === "NO_ACCOUNT") return NO_ACCOUNT_REPLY;
+
+  if (report.status === "INSUFFICIENT_HISTORY") {
+    const months = Math.floor(report.historyMonths);
+    return (
+      `Ainda não dá pra projetar seu caixa com confiança: tenho ${months} ` +
+      `${months === 1 ? "mês" : "meses"} de histórico e preciso de ${report.minHistoryMonths}. ` +
+      `Seguindo seus lançamentos, chego lá.`
+    );
+  }
+
+  const currency = report.currency ?? "BRL";
+  const lines = report.horizons.map(
+    (horizon) =>
+      `• ${horizon.horizonDays} dias: entre ${formatMoney(horizon.p10.toFixed(2), currency)} e ` +
+      `${formatMoney(horizon.p90.toFixed(2), currency)} — cenário provável ` +
+      `${formatMoney(horizon.p50.toFixed(2), currency)}`,
+  );
+
+  const parts = [`Projeção do seu caixa:\n${lines.join("\n")}`];
+
+  if (report.alert) {
+    parts.push(
+      `⚠️ No cenário provável, seu saldo fica negativo em cerca de ` +
+        `${report.alert.crossesAtDay} dias.`,
+    );
+  }
+
+  return parts.join("\n\n");
 }
 
 async function buildAnswer(
@@ -40,15 +93,15 @@ async function buildAnswer(
   }
 
   if (intent === "STATEMENT") {
-    const transactions = await getRecentTransactions(message.tenantId, message.userId);
-    if (!transactions) return { text: NO_ACCOUNT_REPLY, modelGenerated: false };
-    if (transactions.length === 0) {
+    const statement = await getRecentTransactions(message.tenantId, message.userId);
+    if (!statement) return { text: NO_ACCOUNT_REPLY, modelGenerated: false };
+    if (statement.transactions.length === 0) {
       return { text: "Não há lançamentos registrados na sua conta ainda.", modelGenerated: false };
     }
 
-    const lines = transactions.map((item) => {
+    const lines = statement.transactions.map((item) => {
       const date = item.occurredAt.toLocaleDateString("pt-BR", { timeZone: "America/Sao_Paulo" });
-      return `• ${date} — ${item.description}: ${formatMoney(item.amount, "BRL")}`;
+      return `• ${date} — ${item.description}: ${formatMoney(item.amount, statement.currency)}`;
     });
     return { text: `Seus últimos lançamentos:\n${lines.join("\n")}`, modelGenerated: false };
   }
@@ -56,8 +109,7 @@ async function buildAnswer(
   if (intent === "FORECAST") {
     // Previsão é dado nosso (MEI-Oráculo), montado por template — não é
     // saída de LLM, então não precisa fail-closed no Content Safety.
-    const forecast = await getLatestForecast(message.tenantId, message.userId);
-    return { text: formatForecast(forecast), modelGenerated: false };
+    return { text: await buildForecastReply(message), modelGenerated: false };
   }
 
   if (!isRouterConfigured()) {
@@ -71,42 +123,6 @@ async function buildAnswer(
     console.error("[monneyhub-zap] Router API indisponível:", error);
     return { text: UNAVAILABLE_REPLY, modelGenerated: false };
   }
-}
-
-/** Previsão do MEI-Oráculo em linguagem de WhatsApp — sempre faixa, nunca número único. */
-function formatForecast(forecast: ForecastView): string {
-  if (forecast.status === "NO_RUN" || forecast.status === "AWAITING_DATA") {
-    const missing = forecast.missingMonths;
-    const complemento = missing
-      ? ` Faltam cerca de ${missing} ${missing === 1 ? "mês" : "meses"} de histórico.`
-      : "";
-    return `Ainda não tenho histórico suficiente pra projetar seu fluxo de caixa.${complemento}`;
-  }
-
-  if (forecast.status !== "READY") {
-    return "Sua previsão está sendo atualizada. Me pergunta de novo daqui a pouco.";
-  }
-
-  const linhas = (forecast.horizons ?? [])
-    .filter((horizon) => horizon.realista !== null)
-    .map(
-      (horizon) =>
-        `• Em ${horizon.horizonDays} dias: ${formatMoney(horizon.realista!.toFixed(2), "BRL")} ` +
-        `(entre ${formatMoney(horizon.pessimista!.toFixed(2), "BRL")} e ` +
-        `${formatMoney(horizon.otimista!.toFixed(2), "BRL")})`,
-    );
-
-  if (linhas.length === 0) {
-    return "Sua previsão está sendo atualizada. Me pergunta de novo daqui a pouco.";
-  }
-
-  const alerta = forecast.negativeBalanceAlert
-    ? `\n\n⚠️ No cenário realista seu saldo fica negativo em ` +
-      `${forecast.negativeBalanceAlert.crossingDate} — daqui a ` +
-      `${forecast.negativeBalanceAlert.leadDays} dias.`
-    : "";
-
-  return `Projeção do seu saldo:\n${linhas.join("\n")}${alerta}`;
 }
 
 /**

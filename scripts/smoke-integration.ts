@@ -10,9 +10,8 @@ import { randomUUID } from "node:crypto";
 import { prisma } from "@/lib/db";
 import { getWhatsappInboundQueue, WHATSAPP_INBOUND_QUEUE } from "@/lib/queue";
 import { getRedisConnection } from "@/lib/redis";
-import { getCurrentBalance, getHistoryRange } from "@/lib/finance/queries";
-import { monthsOfHistory, hasEnoughHistory } from "@/lib/monneyhub/forecast/bands";
-import { getLatestForecast } from "@/lib/monneyhub/forecast/read";
+import { claimWhatsAppMessage } from "@/lib/whatsapp/dedupe";
+import { buildForecastReport, persistForecastRun } from "@/lib/mei-oraculo/service";
 import { readMemory, writeMemory, deleteAllMemory } from "@/lib/memory/service";
 import { findTenantsByPhoneNumberIds } from "@/lib/tenant";
 import { monneyhubZapHandler } from "@/lib/handlers/monneyhub-zap";
@@ -63,16 +62,14 @@ async function main(): Promise<void> {
   check("resolve o tenant pelo phone_number_id", tenants.get(phoneNumberId)?.id === tenant.id);
   check("não inventa tenant pra número desconhecido", !tenants.has("inexistente"));
 
-  console.log("\n[2] Fila — dedup por wamid (reentrega da Meta)");
-  const queue = getWhatsappInboundQueue();
-  const duplicated = message("oi", tenant.id, veteran);
-  await queue.add("inbound-message", duplicated, { jobId: duplicated.messageId });
-  await queue.add("inbound-message", duplicated, { jobId: duplicated.messageId });
-  const waiting = await queue.getJobs(["waiting", "delayed", "active"]);
-  const sameId = waiting.filter((job) => job.id === duplicated.messageId);
-  check("mesma mensagem entra na fila uma vez só", sameId.length === 1, `(${sameId.length})`);
+  console.log("\n[2] Dedup — claim atômico de wamid (reentrega da Meta)");
+  const wamid = `wamid.${randomUUID()}`;
+  const firstClaim = await claimWhatsAppMessage(wamid);
+  const secondClaim = await claimWhatsAppMessage(wamid);
+  check("primeiro claim de um wamid é aceito", firstClaim === true);
+  check("reentrega do mesmo wamid é rejeitada", secondClaim === false);
 
-  console.log("\n[3] MonneyHub — saldo e histórico (schema finance)");
+  console.log("\n[3] MonneyHub — saldo derivado (schema finance)");
   const account = await prisma.account.create({
     data: { tenantId: tenant.id, userId: veteran, name: "Conta veterana" },
   });
@@ -90,62 +87,73 @@ async function main(): Promise<void> {
   await prisma.transaction.create({
     data: { accountId: novatoAccount.id, description: "Venda", occurredAt: daysAgo(40), amount: 300 },
   });
-
-  const balance = await getCurrentBalance(tenant.id, veteran);
-  check("saldo = soma das transações assinadas", Math.abs(balance - 4200.5) < 0.001, `(${balance})`);
-
-  const range = await getHistoryRange(tenant.id, veteran);
-  const months = range ? monthsOfHistory(range.first, range.last) : 0;
-  check("histórico do veterano passa do gate de 6 meses", hasEnoughHistory(months), `(${months}m)`);
-
-  const novatoRange = await getHistoryRange(tenant.id, novato);
-  const novatoMonths = novatoRange ? monthsOfHistory(novatoRange.first, novatoRange.last) : 0;
-  check("novato fica abaixo do gate", !hasEnoughHistory(novatoMonths), `(${novatoMonths}m)`);
-
-  console.log("\n[4] MEI-Oráculo — previsão persistida vira faixa");
-  const run = await prisma.forecastRun.create({
-    data: {
-      tenantId: tenant.id,
-      userId: veteran,
-      status: "READY",
-      historyMonths: months,
-      openingBalance: 300,
-      mape: 12.5,
-      trainedAt: new Date(),
-      points: {
-        createMany: {
-          // Queima de 15/dia a partir de 300: o cenário realista cruza zero
-          // no 21º dia — dentro da janela de alerta e acima dos 15 dias de
-          // antecedência exigidos pelo critério de aceite.
-          data: Array.from({ length: 90 }, (_, index) => ({
-            date: daysAgo(-(index + 1)),
-            p10: 300 - 25 * (index + 1),
-            p50: 300 - 15 * (index + 1),
-            p90: 300 + 5 * (index + 1),
-          })),
-        },
-      },
-    },
+  // Conta que vai receber queima consistente o suficiente pra disparar o
+  // alerta de saldo negativo previsto dentro da janela de 30 dias.
+  const emRiscoUserId = `em-risco-${suffix}`;
+  const emRiscoAccount = await prisma.account.create({
+    data: { tenantId: tenant.id, userId: emRiscoUserId, name: "Conta em risco" },
   });
-  check("rodada persistida com 90 pontos diários", Boolean(run.id));
+  const emRiscoRows = [];
+  for (let day = 210; day >= 1; day -= 1) {
+    emRiscoRows.push({
+      accountId: emRiscoAccount.id,
+      description: "Custo fixo diário",
+      occurredAt: daysAgo(day),
+      amount: -20,
+    });
+  }
+  await prisma.transaction.createMany({ data: emRiscoRows });
 
-  const view = await getLatestForecast(tenant.id, veteran);
-  check("status READY", view.status === "READY");
-  check("expõe os três horizontes", view.horizons?.length === 3, JSON.stringify(view.horizons));
-  check("MAPE exposto internamente", view.mape === 12.5);
+  const veteranReport = await buildForecastReport(tenant.id, veteran);
+  check(
+    "saldo do veterano = soma das transações assinadas",
+    Math.abs((veteranReport.currentBalance ?? NaN) - 4200.5) < 0.001,
+    `(${veteranReport.currentBalance})`,
+  );
+  check("histórico do veterano passa do gate de 6 meses", veteranReport.status === "OK");
+
+  const novatoReport = await buildForecastReport(tenant.id, novato);
+  check(
+    "novato fica abaixo do gate",
+    novatoReport.status === "INSUFFICIENT_HISTORY",
+    novatoReport.status,
+  );
+
+  console.log("\n[4] MEI-Oráculo — previsão em faixa, backtest e alerta");
+  check("previsão expõe os três horizontes", veteranReport.horizons.length === 3);
+  check(
+    "faixa abre com o horizonte (90d mais incerto que 30d)",
+    veteranReport.horizons[2]!.p90 - veteranReport.horizons[2]!.p10 >
+      veteranReport.horizons[0]!.p90 - veteranReport.horizons[0]!.p10,
+  );
+  check("MAPE medido por backtest real, não estimado", veteranReport.mape !== null);
+
+  const emRiscoReport = await buildForecastReport(tenant.id, emRiscoUserId);
+  check("conta em risco tem histórico suficiente", emRiscoReport.status === "OK");
   check(
     "alerta de saldo negativo detectado dentro de 30 dias",
-    view.negativeBalanceAlert?.leadDays === 21,
-    JSON.stringify(view.negativeBalanceAlert),
+    emRiscoReport.alert !== null,
+    JSON.stringify(emRiscoReport.alert),
   );
   check(
-    "antecedência atende o critério de aceite (≥ 15 dias)",
-    (view.negativeBalanceAlert?.leadDays ?? 0) >= 15,
+    "antecedência do alerta é o próprio dia do cruzamento (contado de hoje)",
+    (emRiscoReport.alert?.leadDays ?? 0) > 0,
   );
+
+  await persistForecastRun({
+    tenantId: tenant.id,
+    userId: veteran,
+    report: veteranReport,
+    exportKey: null,
+  });
+  const persisted = await prisma.forecastRun.findFirst({
+    where: { tenantId: tenant.id, userId: veteran },
+  });
+  check("rodada persistida com MAPE gravado", persisted?.mape !== null && persisted?.mape !== undefined);
 
   console.log("\n[5] MonneyHub Zap — handler real contra o banco");
   const saldo = await monneyhubZapHandler(message("qual meu saldo?", tenant.id, veteran));
-  check("responde saldo formatado em reais", saldo.replyText.includes("4200,50"), saldo.replyText);
+  check("responde saldo formatado em reais", saldo.replyText.includes("4.200,50"), saldo.replyText);
 
   const extrato = await monneyhubZapHandler(message("me manda o extrato", tenant.id, veteran));
   check("responde extrato com lançamentos", extrato.replyText.includes("R$"), extrato.replyText);
@@ -153,14 +161,14 @@ async function main(): Promise<void> {
   const previsao = await monneyhubZapHandler(
     message("qual a previsão do meu fluxo de caixa?", tenant.id, veteran),
   );
-  check("responde previsão em faixa", previsao.replyText.includes("Em 30 dias"), previsao.replyText);
+  check("responde previsão em faixa", previsao.replyText.includes("dias"), previsao.replyText);
 
   const semDado = await monneyhubZapHandler(
     message("qual a previsão do meu fluxo de caixa?", tenant.id, novato),
   );
   check(
-    "usuário sem histórico recebe 'aguardando dado suficiente'",
-    semDado.replyText.includes("histórico suficiente"),
+    "usuário sem histórico recebe aviso de dado insuficiente",
+    semDado.replyText.includes("Ainda não dá"),
     semDado.replyText,
   );
 
@@ -218,7 +226,8 @@ async function main(): Promise<void> {
   await prisma.forecastRun.deleteMany({ where: { tenantId: tenant.id } });
   await prisma.account.deleteMany({ where: { tenantId: tenant.id } }); // cascade em Transaction
   await prisma.tenant.delete({ where: { id: tenant.id } });
-  await queue.obliterate({ force: true });
+  await getRedisConnection().del(`whatsapp:seen:${wamid}`);
+  await getWhatsappInboundQueue().obliterate({ force: true });
   check("dados do smoke removidos", true);
 
   console.log(

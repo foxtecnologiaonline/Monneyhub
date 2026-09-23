@@ -97,85 +97,28 @@ model Transaction {
 }
 
 // --- MEI-Oráculo -------------------------------------------------------
-// Previsão de fluxo de caixa gerada pelo Amazon Forecast.
+// Previsão de fluxo de caixa: baseline estatístico local (passeio aleatório
+// com deriva, ver src/lib/mei-oraculo/forecast.ts), não Amazon Forecast —
+// decisão registrada no README (débito técnico: swap pro provedor gerenciado
+// é trabalho futuro, já isolado atrás da interface de forecastBalance()).
 
-enum ForecastStatus {
-  /// Menos de 6 meses de histórico — não dá pra treinar ainda.
-  AWAITING_DATA
-  TRAINING
-  READY
-  FAILED
-
-  @@schema("finance")
-}
-
+/// Execução do MEI-Oráculo. Guardar o MAPE por execução é o que permite
+/// "expor a precisão internamente" em vez de prometer número sem medir.
 model ForecastRun {
-  id             String         @id @default(uuid())
-  tenantId       String
-  userId         String
-  status         ForecastStatus
-  /// Meses de histórico disponíveis quando a rodada começou.
-  historyMonths  Int
-  /// Saldo no momento do treino — a previsão é acumulada a partir dele.
-  openingBalance Decimal        @db.Decimal(14, 2)
-  predictorArn   String?
-  forecastArn    String?
-  /// Erro percentual médio medido em backtest. Exposto internamente — não
-  /// prometemos precisão sem medir (critério de aceite do escopo).
-  mape           Float?
-  failureReason  String?
-  trainedAt      DateTime?
-  createdAt      DateTime       @default(now())
-  updatedAt      DateTime       @updatedAt
+  id            String   @id @default(uuid())
+  tenantId      String
+  userId        String
+  runAt         DateTime @default(now())
+  /// OK | INSUFFICIENT_HISTORY
+  status        String
+  /// [{ horizonDays, p10, p50, p90 }]
+  horizons      Json
+  historyMonths Decimal  @db.Decimal(6, 2)
+  mape          Decimal? @db.Decimal(8, 2)
+  alertLeadDays Int?
+  alertAtDay    Int?
+  exportKey     String?
 
-  points ForecastPoint[]
-
-  @@index([tenantId, userId, createdAt])
-  @@schema("finance")
-}
-
-model ForecastPoint {
-  id    String      @id @default(uuid())
-  runId String
-  run   ForecastRun @relation(fields: [runId], references: [id], onDelete: Cascade)
-  /// Série diária de saldo previsto — o alerta precisa saber em que dia o
-  /// P50 cruza zero, não só o valor no dia 30/60/90.
-  date  DateTime    @db.Date
-  p10   Float
-  p50   Float
-  p90   Float
-
-  @@unique([runId, date])
-  @@index([runId, date])
-  @@schema("finance")
-}
-
-/// Estágios do pipeline do Amazon Forecast. Import, treino e geração são
-/// assíncronos e levam horas — o job semanal cria o pipeline e um tick
-/// frequente avança um estágio por vez consultando o ARN corrente.
-enum PipelineStage {
-  IMPORTING
-  TRAINING
-  FORECASTING
-  QUERYING
-  DONE
-  FAILED
-
-  @@schema("finance")
-}
-
-model ForecastPipeline {
-  id            String        @id @default(uuid())
-  stage         PipelineStage
-  s3Path        String
-  importJobArn  String?
-  predictorArn  String?
-  forecastArn   String?
-  failureReason String?
-  startedAt     DateTime      @default(now())
-  finishedAt    DateTime?
-  updatedAt     DateTime      @updatedAt
-
-  @@index([stage])
+  @@index([tenantId, userId, runAt])
   @@schema("finance")
 }

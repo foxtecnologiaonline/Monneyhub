@@ -1,13 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
 import { isAuthorizedInternalRequest } from "@/lib/internal-auth";
-import { getLatestForecast } from "@/lib/monneyhub/forecast/read";
+import { buildForecastReport } from "@/lib/mei-oraculo/service";
 
 type RouteContext = { params: Promise<{ userId: string }> };
 
 /**
- * GET /api/monneyhub/forecast/:userId?tenantId=...
- * Previsão de saldo em faixa (pessimista/realista/otimista) pros próximos
- * 30/60/90 dias. Faixa e não número único — evita falsa precisão.
+ * GET /api/forecast/:userId?tenantId=...
+ * Previsão de saldo em faixa pros próximos 30/60/90 dias (MEI-Oráculo).
+ * API interna, mesma chave compartilhada do resto dos serviços FOX.
  */
 export async function GET(request: NextRequest, { params }: RouteContext) {
   if (!isAuthorizedInternalRequest(request)) {
@@ -20,5 +20,11 @@ export async function GET(request: NextRequest, { params }: RouteContext) {
     return NextResponse.json({ error: "tenantId é obrigatório" }, { status: 400 });
   }
 
-  return NextResponse.json(await getLatestForecast(tenantId, userId));
+  const report = await buildForecastReport(tenantId, userId);
+
+  if (report.status === "NO_ACCOUNT") {
+    return NextResponse.json({ error: "conta não encontrada" }, { status: 404 });
+  }
+
+  return NextResponse.json(report);
 }

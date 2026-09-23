@@ -14,7 +14,7 @@
     "test": "vitest run",
     "smoke": "tsx scripts/smoke-integration.ts",
     "worker:whatsapp": "tsx src/workers/whatsapp-inbound.worker.ts",
-    "worker:forecast": "tsx src/workers/forecast.worker.ts",
+    "worker:forecast": "tsx src/workers/forecast-weekly.worker.ts",
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",
     "prisma:seed": "tsx prisma/seed.ts"
@@ -24,8 +24,6 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.128.0",
-    "@aws-sdk/client-forecast": "^3.1138.0",
-    "@aws-sdk/client-forecastquery": "^3.1138.0",
     "@aws-sdk/client-s3": "^3.1138.0",
     "@prisma/client": "^5.22.0",
     "bullmq": "^5.34.0",

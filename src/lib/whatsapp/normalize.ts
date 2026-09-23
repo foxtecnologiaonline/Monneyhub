@@ -23,8 +23,8 @@ export interface InboundWhatsAppMessage {
   phoneNumberId: string;
   /** wa_id do remetente */
   waId: string;
-  /** wamid — identidade estável da mensagem na Meta */
-  messageId: string;
+  /** wamid — identidade estável da mensagem na Meta, usada pra deduplicar reentrega. */
+  waMessageId: string;
   text: string;
   timestamp: string;
   raw: unknown;
@@ -59,7 +59,7 @@ export function normalizeWhatsAppPayload(body: unknown): InboundWhatsAppMessage[
         out.push({
           phoneNumberId,
           waId: message.from,
-          messageId: message.id,
+          waMessageId: message.id,
           text: message.text.body,
           timestamp: toIsoTimestamp(message.timestamp),
           raw: message,

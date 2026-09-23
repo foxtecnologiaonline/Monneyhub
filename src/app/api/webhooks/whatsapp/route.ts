@@ -3,6 +3,7 @@ import { verifyWebhookChallenge, isValidWhatsAppSignature } from "@/lib/whatsapp
 import { normalizeWhatsAppPayload } from "@/lib/whatsapp/normalize";
 import { findTenantsByPhoneNumberIds } from "@/lib/tenant";
 import { getWhatsappInboundQueue } from "@/lib/queue";
+import { claimWhatsAppMessage } from "@/lib/whatsapp/dedupe";
 import type { NormalizedMessage } from "@/lib/handlers/types";
 
 /**
@@ -47,11 +48,29 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ received: true, enqueued: 0 });
   }
 
-  const tenantsByPhoneNumberId = await findTenantsByPhoneNumberIds(
-    messages.map((message) => message.phoneNumberId),
+  // Claim atômico (Redis SET NX) antes de qualquer trabalho: cobre reentrega
+  // da Meta E corrida entre réplicas do webhook, que um "consulta o tenant,
+  // depois enfileira" não cobriria.
+  const claimed = await Promise.all(
+    messages.map(async (message) => ({
+      message,
+      claimed: await claimWhatsAppMessage(message.waMessageId),
+    })),
   );
 
-  const jobs = messages.flatMap((message) => {
+  const survivors = claimed.flatMap(({ message, claimed }) => {
+    if (!claimed) {
+      console.info(`[whatsapp] reentrega ignorada: ${message.waMessageId}`);
+      return [];
+    }
+    return [message];
+  });
+
+  const tenantsByPhoneNumberId = await findTenantsByPhoneNumberIds(
+    survivors.map((message) => message.phoneNumberId),
+  );
+
+  const jobs = survivors.flatMap((message) => {
     const tenant = tenantsByPhoneNumberId.get(message.phoneNumberId);
     if (!tenant) {
       console.warn(`Mensagem de phone_number_id desconhecido: ${message.phoneNumberId}`);
@@ -62,15 +81,15 @@ export async function POST(request: NextRequest) {
       tenantId: tenant.id,
       phoneNumberId: message.phoneNumberId,
       userId: message.waId,
-      messageId: message.messageId,
+      messageId: message.waMessageId,
       text: message.text,
       timestamp: message.timestamp,
       raw: message.raw,
     };
 
-    // jobId = wamid: a Meta reentrega o webhook em timeout/erro, e a fila
-    // descarta a duplicata sozinha em vez de responder duas vezes ao usuário.
-    return [{ name: "inbound-message", data: normalized, opts: { jobId: message.messageId } }];
+    // jobId = wamid: segunda camada de dedup, agora na fila — mesmo se o
+    // claim no Redis for perdido (ex.: flush acidental), a fila não duplica.
+    return [{ name: "inbound-message", data: normalized, opts: { jobId: message.waMessageId } }];
   });
 
   if (jobs.length > 0) {

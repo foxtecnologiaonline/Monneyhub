@@ -8,11 +8,13 @@ Escopo completo em [`docs/`](./docs).
 ### Camada A — Gateway WhatsApp / Roteador de Intenção
 
 - `POST /api/webhooks/whatsapp` — webhook único da Meta Business API: valida
-  assinatura (`X-Hub-Signature-256`), identifica o tenant pelo
-  `phone_number_id`, normaliza e enfileira via BullMQ (`whatsapp-inbound`),
-  usando o `wamid` como `jobId` — a Meta reentrega em timeout e a fila
-  descarta a duplicata sozinha. Responde rápido (a Meta exige 2xx em poucos
-  segundos); todo processamento pesado acontece fora do request.
+  assinatura (`X-Hub-Signature-256`), deduplica reentrega por `wamid`
+  (`claimWhatsAppMessage`, `SET NX` atômico no Redis — cobre corrida entre
+  réplicas do webhook, não só timeout), identifica o tenant pelo
+  `phone_number_id` em lote e enfileira via BullMQ (`whatsapp-inbound`), com
+  o `wamid` também como `jobId` da fila (segunda camada de defesa). Responde
+  rápido (a Meta exige 2xx em poucos segundos); todo processamento pesado
+  acontece fora do request.
 - `GET /api/webhooks/whatsapp` — handshake de verificação do webhook.
 - `npm run worker:whatsapp` — worker que consome a fila, classifica a
   intenção (`src/lib/intent/classify.ts` — Claude com saída estruturada
@@ -40,27 +42,33 @@ Camada B (scoring via SageMaker) fica pra Fase 3, com Radar de Vendas.
 
 ### MEI-Oráculo — previsão de fluxo de caixa
 
-- `npm run worker:forecast` roda dois jobs repetíveis:
-  - `weekly-training` (segunda, 03:00): exporta o histórico transacional
-    (`src/lib/finance/queries.ts`) pro formato do Amazon Forecast
-    (`item_id,timestamp,target_value`), sobe pro S3 e abre o import job.
-  - `tick` (15min): avança o pipeline um estágio por vez
-    (`IMPORTING → TRAINING → FORECASTING → QUERYING → DONE`) — import, treino
-    e geração levam horas, então nenhum job fica bloqueado esperando.
-- No estágio final consulta a previsão por usuário, converte fluxo diário em
-  **série de saldo** e persiste 90 pontos diários por rodada.
-- `GET /api/monneyhub/forecast/:userId?tenantId=…` devolve a previsão como
-  **faixa** (pessimista/realista/otimista = P10/P50/P90) em 30/60/90 dias,
-  contada a partir de hoje — nunca número único, pra não sugerir precisão
-  que o modelo não tem.
-- Usuário com menos de 6 meses de histórico fica em `AWAITING_DATA` e recebe
-  quantos meses ainda faltam.
-- **Alerta proativo**: quando o cenário realista (P50) cruza zero dentro de
-  30 dias, um job entra na fila `forecast-alerts` com a data do cruzamento e
-  os dias de antecedência (`meetsLeadTimeTarget` marca o critério de aceite
-  de 15 dias).
-- **MAPE** do preditor é lido do backtest do próprio Forecast e gravado na
-  rodada — exposto internamente, nunca prometido ao usuário.
+Escopo em [`docs/04-monneyhub-mei-oraculo.md`](./docs/04-monneyhub-mei-oraculo.md).
+`src/lib/mei-oraculo/`:
+
+- **Série diária** (`series.ts`) — agrega as transações da conta em fluxo
+  líquido por dia; dias sem lançamento entram como zero de propósito (sem
+  isso a variância sairia subestimada, e é a variância que abre a faixa
+  P10/P90). `hasEnoughHistory` aplica o gate de 6 meses.
+- **Previsão** (`forecast.ts`) — baseline de passeio aleatório com deriva:
+  projeção em *t* dias tem média *t·μ* e desvio *√t·σ*, o que abre a faixa
+  com o horizonte (90 dias é mais incerto que 30, por construção). Fica
+  atrás de uma interface pequena de propósito — ver débito técnico abaixo.
+- **Alerta** (`alert.ts`) — dispara quando o caminho **mediano** (P50, não
+  o pessimista) cruza zero dentro de 30 dias.
+- **Backtest** (`backtest.ts`) — corta os últimos 30 dias do histórico,
+  prevê a partir do corte e compara com o que realmente aconteceu. É o que
+  mede o MAPE de verdade (não estimado) e valida a antecedência do alerta
+  contra dado real, não só contra a lógica.
+- **Export** (`export.ts`) — sobe o histórico em CSV pro S3 (ou qualquer
+  S3-compatível, incluindo R2) quando `FORECAST_EXPORT_BUCKET` está
+  configurado; sem o bucket, a previsão roda normal e só o export é pulado.
+- **Serviço** (`service.ts`) — `buildForecastReport` monta o relatório
+  (`NO_ACCOUNT` / `INSUFFICIENT_HISTORY` / `OK`) e `persistForecastRun`
+  grava a rodada, com MAPE, para expor a precisão internamente.
+- `npm run worker:forecast` (`forecast-weekly.worker.ts`) — roda toda conta,
+  persiste a rodada e enfileira (`forecast-alert`) quando há alerta.
+- `GET /api/forecast/:userId?tenantId=…` devolve o relatório completo —
+  sempre **faixa** (P10/P50/P90) em 30/60/90 dias, nunca número único.
 
 ### MonneyHub Zap — assistente financeiro no WhatsApp
 
@@ -73,10 +81,11 @@ disclaimer**.
   `BALANCE` / `STATEMENT` / `FORECAST` (dado interno) de `MARKET` (pergunta
   livre). Determinística por keyword de propósito — é o passo mais barato do
   fluxo e não pode consumir o orçamento de latência da Router API.
-- **Dado interno** (`src/lib/finance/queries.ts`) lê saldo, extrato e a
-  previsão do MEI-Oráculo. Saldo é **derivado** da soma das transações, não
-  materializado na conta — nunca diverge do extrato. Valores em `Decimal`,
-  não float.
+- **Dado interno** (`src/lib/finance/queries.ts`) lê saldo e extrato. Saldo
+  é **derivado** da soma das transações, não materializado na conta — nunca
+  diverge do extrato. Valores em `Decimal`, não float.
+- **Previsão** vem do MEI-Oráculo (`buildForecastReport`) — nunca da Router
+  API: é pergunta sobre o caixa do próprio usuário.
 - **Dado de mercado** (`src/lib/perplexity/router.ts`) consulta a Perplexity
   Router API. Endpoint e modelo configuráveis por env.
 - **Guarda de conteúdo** (`src/lib/safety/content-safety.ts`) — Azure AI
@@ -96,8 +105,8 @@ Critérios de aceite do escopo, e onde estão cobertos:
 | --- | --- |
 | 100% das respostas que mencionam investimento levam o disclaimer | `tests/monneyhub-zap-disclaimer.test.ts` |
 | Latência < 5s incluindo Router API | orçamento explícito no handler: Router 3000ms + Content Safety 1200ms, via `AbortSignal.timeout` |
-| Erro percentual médio (MAPE) documentado e exposto internamente | `ForecastRun.mape`, lido do backtest do Forecast |
-| Alerta de saldo negativo com ≥ 15 dias de antecedência | `meetsLeadTimeTarget` em `NegativeBalanceAlert` |
+| Erro percentual médio (MAPE) documentado e exposto internamente | `ForecastRun.mape`, medido por backtest real (`tests/mei-oraculo-backtest.test.ts`) |
+| Alerta de saldo negativo com ≥ 15 dias de antecedência | `meetsLeadRequirement` em `BacktestResult`, validado contra histórico real |
 
 Fora de escopo no v1, conforme os docs: transação financeira real (PIX,
 pagamento) e recomendação automática de ação financeira.
@@ -112,16 +121,12 @@ npx prisma migrate deploy
 npm run prisma:seed    # cria um tenant + conta de exemplo pra testar localmente
 ```
 
-Os recursos do Amazon Forecast (dataset, dataset group e role IAM) são
-**infraestrutura**, não runtime da aplicação: crie-os uma vez e informe os
-ARNs por env (ver `.env.example`).
-
 ## Rodando
 
 ```bash
-npm run dev             # Next.js (webhooks + APIs internas)
+npm run dev             # Next.js (webhook + APIs internas)
 npm run worker:whatsapp # gateway: classificação, despacho e resposta
-npm run worker:forecast # MEI-Oráculo: treino semanal + tick do pipeline
+npm run worker:forecast # MEI-Oráculo: roda a previsão de todas as contas
 ```
 
 ## Qualidade
@@ -134,33 +139,34 @@ npm run smoke           # smoke de integração: precisa de Postgres e Redis rea
 ```
 
 `npm run smoke` (`scripts/smoke-integration.ts`) exercita o caminho real
-ponta a ponta — identificação de tenant, dedup da fila, saldo, gate de
-histórico, faixa de previsão, alerta de saldo negativo, handler do Zap e o
-ciclo completo da memória incluindo a exclusão LGPD. Ele cria e remove os
-próprios dados.
+ponta a ponta — identificação de tenant, dedup da mensagem (Redis + fila),
+saldo, gate de histórico, faixa de previsão, alerta de saldo negativo,
+handler do Zap e o ciclo completo da memória incluindo a exclusão LGPD. Ele
+cria e remove os próprios dados.
 
 ## Variáveis de ambiente
 
 Ver [`.env.example`](./.env.example): `DATABASE_URL`, `REDIS_URL`,
 `META_WEBHOOK_VERIFY_TOKEN`, `META_APP_SECRET`, `META_ACCESS_TOKEN`,
-`ANTHROPIC_API_KEY`, `INTERNAL_API_KEY`, `AWS_REGION`, `FORECAST_S3_BUCKET`,
-`FORECAST_DATASET_ARN`, `FORECAST_DATASET_GROUP_ARN`, `FORECAST_ROLE_ARN`,
-`PERPLEXITY_API_KEY`, `PERPLEXITY_BASE_URL`, `PERPLEXITY_MODEL`,
-`AZURE_CONTENT_SAFETY_ENDPOINT`, `AZURE_CONTENT_SAFETY_KEY`,
-`AZURE_CONTENT_SAFETY_BLOCK_SEVERITY`.
+`ANTHROPIC_API_KEY`, `INTERNAL_API_KEY`, `PERPLEXITY_API_KEY`,
+`PERPLEXITY_BASE_URL`, `PERPLEXITY_MODEL`, `AZURE_CONTENT_SAFETY_ENDPOINT`,
+`AZURE_CONTENT_SAFETY_KEY`, `AZURE_CONTENT_SAFETY_BLOCK_SEVERITY`,
+`FORECAST_EXPORT_BUCKET`, `AWS_REGION`, `S3_ENDPOINT`.
 
 ## Débito técnico conhecido (sinalizado, não bloqueia a entrega)
 
-- **Faixa por soma acumulada de quantis.** Somar o P10 diário não é o P10
-  estatístico do saldo acumulado (os erros diários não são perfeitamente
-  correlacionados). É a aproximação usual e coerente com o propósito da
-  faixa — comunicar incerteza, não cravar percentil. Documentado em
-  `src/lib/monneyhub/forecast/bands.ts`.
+- **MEI-Oráculo usa baseline estatístico local, não Amazon Forecast.** O doc
+  de escopo nomeia Amazon Forecast como provedor; a implementação atual é um
+  passeio aleatório com deriva (`forecast.ts`), rodando em processo, sem
+  depender de infra AWS provisionada. Decisão deliberada pra ter o produto
+  funcionando e testável hoje — `forecastBalance()` é a única função que
+  precisa trocar para plugar um modelo gerenciado (Forecast/SageMaker)
+  quando a decisão de fornecedor fechar; o resto do produto (série, alerta,
+  backtest, persistência, handler) não muda.
 - **Provisionamento de tenant e conta é manual** (`prisma:seed` ou Prisma
   Studio). Não há endpoint/admin ainda pra cadastrar tenant ou vincular
   número de WhatsApp a conta — o handler responde "conta não encontrada"
-  quando o `wa_id` não bate com nenhuma. Cadastro real fica pra quando o
-  MonneyHub Zap precisar onboardar tenants de verdade.
+  quando o `wa_id` não bate com nenhuma.
 - **Classificação financeira do Zap é por palavra-chave.** Escolha
   consciente pela latência; se a precisão do roteamento virar problema, o
   caminho é um classificador dedicado, não encadear mais uma chamada de LLM
@@ -172,6 +178,6 @@ Ver [`.env.example`](./.env.example): `DATABASE_URL`, `REDIS_URL`,
   `chat/completions`.** Base URL e modelo são env justamente por isso: se a
   rota real divergir, é configuração, não reescrita. Confirmar contra a conta
   real antes de produção.
-- **Sem teste automatizado dos caminhos AWS/Azure/Perplexity.** O smoke cobre
-  Postgres e Redis reais; as integrações externas são exercitadas só por
-  mock. Um ambiente de staging com credenciais fecharia essa lacuna.
+- **Sem teste automatizado dos caminhos Azure/Perplexity/S3 reais.** O smoke
+  cobre Postgres e Redis reais; essas três integrações são exercitadas só
+  por mock. Um ambiente de staging com credenciais fecharia essa lacuna.
