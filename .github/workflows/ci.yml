@@ -1,0 +1,65 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+
+    # Postgres e Redis reais, não mock: a migration é aplicada de verdade
+    # (prisma migrate deploy) e é isso que teria pego, por exemplo, o schema
+    # ficar sem migration nenhuma — o bloqueador que travava o MVP até esta
+    # sessão gerar a migration inicial à mão.
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: monneyhub
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/monneyhub?schema=public
+      REDIS_URL: redis://localhost:6379
+      META_WEBHOOK_VERIFY_TOKEN: ci-verify-token
+      META_APP_SECRET: ci-app-secret
+      META_ACCESS_TOKEN: ci-access-token
+      INTERNAL_API_KEY: ci-internal-key
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - run: npm ci
+
+      - name: Aplica a migration contra Postgres real
+        run: npx prisma migrate deploy
+
+      - run: npm run typecheck
+      - run: npm run lint
+      - run: npm test
+      - run: npm run build

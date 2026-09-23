@@ -129,8 +129,9 @@ pagamento) e recomendação automática de ação financeira.
 ## Setup
 
 ```bash
+docker compose up -d   # Postgres + Redis locais (ver docker-compose.yml)
 npm install
-cp .env.example .env   # preencha as credenciais
+cp .env.example .env   # valores default já batem com o docker-compose acima
 npx prisma generate
 npx prisma migrate deploy
 npm run prisma:seed    # cria um tenant + conta de exemplo pra testar localmente
@@ -169,6 +170,14 @@ Ver [`.env.example`](./.env.example): `DATABASE_URL`, `REDIS_URL`,
 `AZURE_CONTENT_SAFETY_KEY`, `AZURE_CONTENT_SAFETY_BLOCK_SEVERITY`,
 `FORECAST_EXPORT_BUCKET`, `AWS_REGION`, `S3_ENDPOINT`.
 
+## CI
+
+`.github/workflows/ci.yml` roda em todo push/PR pra `main`: sobe Postgres e
+Redis reais como serviços, aplica a migration com `prisma migrate deploy` —
+não só typecheck, é a migration de verdade rodando contra banco novo, o tipo
+de coisa que quebra em silêncio se alguém editar o schema sem gerar migration
+— e então typecheck, lint, testes e build.
+
 ## Débito técnico conhecido (sinalizado, não bloqueia a entrega)
 
 - **MEI-Oráculo usa baseline estatístico local, não Amazon Forecast.** O doc
@@ -187,6 +196,13 @@ Ver [`.env.example`](./.env.example): `DATABASE_URL`, `REDIS_URL`,
   consciente pela latência; se a precisão do roteamento virar problema, o
   caminho é um classificador dedicado, não encadear mais uma chamada de LLM
   no caminho crítico.
+- **Sem suíte de integração ponta a ponta contra o processo real** (subir o
+  Next.js, POST assinado no webhook HTTP de verdade, worker consumindo a
+  fila em processo separado, checar a resposta). O CI aplica a migration
+  contra Postgres real e roda a suíte de testes; `npm run smoke` exercita a
+  lógica de negócio contra Postgres/Redis reais, mas chamando as funções
+  diretamente — não através do servidor HTTP nem dos workers como processos
+  separados.
 - **Latência de 5s é orçada, não medida.** Os timeouts do handler garantem o
   teto por construção, mas ainda não há medição ponta a ponta com a Router
   API real — fica pra validação em staging.
@@ -197,3 +213,5 @@ Ver [`.env.example`](./.env.example): `DATABASE_URL`, `REDIS_URL`,
 - **Sem teste automatizado dos caminhos Azure/Perplexity/S3 reais.** O smoke
   cobre Postgres e Redis reais; essas três integrações são exercitadas só
   por mock. Um ambiente de staging com credenciais fecharia essa lacuna.
+- **`docker-compose.yml` é só pra desenvolvimento local.** Sem credencial
+  real, sem backup, sem TLS — não é o compose de produção.
