@@ -126,11 +126,12 @@ financeira ("corte o gasto X").
 ## Setup
 
 ```bash
+docker compose up -d   # Postgres + Redis locais (ver docker-compose.yml)
 npm install
-cp .env.example .env   # preencha as credenciais
+cp .env.example .env   # valores default já batem com o docker-compose acima
 npx prisma generate
-npx prisma migrate dev --name init
-npm run prisma:seed    # cria um tenant de exemplo pra testar o webhook local
+npx prisma migrate dev
+npm run prisma:seed    # cria um tenant + conta de exemplo pra testar localmente
 ```
 
 ## Rodando
@@ -158,20 +159,26 @@ Ver [`.env.example`](./.env.example): `DATABASE_URL`, `REDIS_URL`,
 `ANTHROPIC_API_KEY`, `INTERNAL_API_KEY`, `PERPLEXITY_API_KEY`,
 `AZURE_CONTENT_SAFETY_ENDPOINT`, `AZURE_CONTENT_SAFETY_KEY`.
 
+## CI
+
+`.github/workflows/ci.yml` roda em todo push/PR pra `main`: sobe Postgres e
+Redis reais como serviços, aplica a migration com `prisma migrate deploy` —
+não só typecheck, é a migration de verdade rodando contra banco novo, o tipo
+de coisa que quebra em silêncio se alguém editar o schema sem gerar migration
+— e então typecheck, lint, testes e build.
+
 ## Débito técnico conhecido (sinalizado, não bloqueia a entrega)
 
-- **Sem deduplicação de mensagem.** A Meta pode reentregar um webhook em
-  caso de timeout/erro; hoje não há checagem pelo `wamid` antes de
-  enfileirar. Baixo risco por ora (resposta rápida reduz retries), mas vira
-  necessário assim que o volume real começar.
 - **Provisionamento de tenant é manual** (`prisma:seed` ou Prisma Studio).
   Não há endpoint/admin ainda pra cadastrar um novo tenant — cadastro real
   fica pra quando o primeiro produto (MonneyHub Zap, Fase 1) precisar
   onboardar tenants de verdade.
-- **Sem testes de integração** contra Postgres/Redis reais — os testes
-  unitários (`npm test`) cobrem a lógica pura (normalização, classificação,
-  roteamento, serviço de memória, MonneyHub Zap) com Prisma/BullMQ/HTTP
-  mockados. Rodar contra infra real fica como próximo passo antes de produção.
+- **Sem suíte de integração automatizada** contra a aplicação de ponta a
+  ponta (subir o Next.js, assinar webhook, rodar worker, checar resposta).
+  O CI valida a migration contra Postgres real; os testes (`npm test`) cobrem
+  a lógica pura com Prisma/BullMQ/HTTP mockados; o fluxo completo (webhook →
+  dedup → worker → resposta) foi validado manualmente em sessão, não roda
+  sozinho a cada push.
 - **Latência de 5s é orçada, não medida.** Os timeouts do handler garantem o
   teto por construção, mas ainda não há medição ponta a ponta com a Router
   API real — fica pra validação em staging.
@@ -182,3 +189,6 @@ Ver [`.env.example`](./.env.example): `DATABASE_URL`, `REDIS_URL`,
 - **Provisionamento de conta financeira é manual** (`prisma:seed`). Não há
   ainda vínculo automático entre número de WhatsApp e conta MonneyHub — o
   handler responde "conta não encontrada" quando o `wa_id` não bate.
+- **`docker-compose.yml` é só pra desenvolvimento local.** Sem credencial
+  real, sem backup, sem TLS — não é o compose de produção, é reprodução do
+  Postgres+Redis que eu subi manualmente nesta sessão pra validar o produto.
