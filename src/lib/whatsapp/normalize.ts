@@ -23,9 +23,19 @@ export interface InboundWhatsAppMessage {
   phoneNumberId: string;
   /** wa_id do remetente */
   waId: string;
+  /** wamid — identidade estável da mensagem na Meta */
+  messageId: string;
   text: string;
   timestamp: string;
   raw: unknown;
+}
+
+/** Timestamp da Meta vem em segundos como string; payload malformado não derruba o lote. */
+function toIsoTimestamp(metaTimestamp: string): string {
+  const seconds = Number(metaTimestamp);
+  if (!Number.isFinite(seconds)) return new Date().toISOString();
+  const date = new Date(seconds * 1000);
+  return Number.isNaN(date.getTime()) ? new Date().toISOString() : date.toISOString();
 }
 
 /**
@@ -45,12 +55,13 @@ export function normalizeWhatsAppPayload(body: unknown): InboundWhatsAppMessage[
       if (!phoneNumberId) continue;
 
       for (const message of change.value.messages ?? []) {
-        if (message.type !== "text" || !message.text?.body) continue;
+        if (message.type !== "text" || !message.text?.body || !message.id) continue;
         out.push({
           phoneNumberId,
           waId: message.from,
+          messageId: message.id,
           text: message.text.body,
-          timestamp: new Date(Number(message.timestamp) * 1000).toISOString(),
+          timestamp: toIsoTimestamp(message.timestamp),
           raw: message,
         });
       }

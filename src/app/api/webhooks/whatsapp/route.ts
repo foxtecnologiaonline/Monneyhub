@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { verifyWebhookChallenge, isValidWhatsAppSignature } from "@/lib/whatsapp/verify";
 import { normalizeWhatsAppPayload } from "@/lib/whatsapp/normalize";
-import { identifyTenantByPhoneNumberId } from "@/lib/tenant";
+import { findTenantsByPhoneNumberIds } from "@/lib/tenant";
 import { getWhatsappInboundQueue } from "@/lib/queue";
 import type { NormalizedMessage } from "@/lib/handlers/types";
 
@@ -34,31 +34,49 @@ export async function POST(request: NextRequest) {
     return new NextResponse("Invalid signature", { status: 401 });
   }
 
-  const body = JSON.parse(rawBody);
+  let body: unknown;
+  try {
+    body = JSON.parse(rawBody);
+  } catch {
+    // 400 em vez de 500: corpo inválido não é erro nosso e não deve virar retry infinito da Meta.
+    return NextResponse.json({ error: "payload inválido" }, { status: 400 });
+  }
+
   const messages = normalizeWhatsAppPayload(body);
+  if (messages.length === 0) {
+    return NextResponse.json({ received: true, enqueued: 0 });
+  }
 
-  const queue = getWhatsappInboundQueue();
-
-  await Promise.all(
-    messages.map(async (message) => {
-      const tenant = await identifyTenantByPhoneNumberId(message.phoneNumberId);
-      if (!tenant) {
-        console.warn(`Mensagem de phone_number_id desconhecido: ${message.phoneNumberId}`);
-        return;
-      }
-
-      const normalized: NormalizedMessage = {
-        tenantId: tenant.id,
-        userId: message.waId,
-        text: message.text,
-        timestamp: message.timestamp,
-        raw: message.raw,
-      };
-
-      await queue.add("inbound-message", normalized);
-    }),
+  const tenantsByPhoneNumberId = await findTenantsByPhoneNumberIds(
+    messages.map((message) => message.phoneNumberId),
   );
 
+  const jobs = messages.flatMap((message) => {
+    const tenant = tenantsByPhoneNumberId.get(message.phoneNumberId);
+    if (!tenant) {
+      console.warn(`Mensagem de phone_number_id desconhecido: ${message.phoneNumberId}`);
+      return [];
+    }
+
+    const normalized: NormalizedMessage = {
+      tenantId: tenant.id,
+      phoneNumberId: message.phoneNumberId,
+      userId: message.waId,
+      messageId: message.messageId,
+      text: message.text,
+      timestamp: message.timestamp,
+      raw: message.raw,
+    };
+
+    // jobId = wamid: a Meta reentrega o webhook em timeout/erro, e a fila
+    // descarta a duplicata sozinha em vez de responder duas vezes ao usuário.
+    return [{ name: "inbound-message", data: normalized, opts: { jobId: message.messageId } }];
+  });
+
+  if (jobs.length > 0) {
+    await getWhatsappInboundQueue().addBulk(jobs);
+  }
+
   // A Meta espera 200 rápido — processamento real acontece no worker.
-  return NextResponse.json({ received: true });
+  return NextResponse.json({ received: true, enqueued: jobs.length });
 }

@@ -12,7 +12,9 @@
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
+    "smoke": "tsx scripts/smoke-integration.ts",
     "worker:whatsapp": "tsx src/workers/whatsapp-inbound.worker.ts",
+    "worker:forecast": "tsx src/workers/forecast.worker.ts",
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",
     "prisma:seed": "tsx prisma/seed.ts"
@@ -21,13 +23,18 @@
     "seed": "tsx prisma/seed.ts"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.32.1",
+    "@anthropic-ai/sdk": "^0.128.0",
+    "@aws-sdk/client-forecast": "^3.1138.0",
+    "@aws-sdk/client-forecastquery": "^3.1138.0",
+    "@aws-sdk/client-s3": "^3.1138.0",
+    "@azure-rest/ai-content-safety": "^1.0.1",
     "@prisma/client": "^5.22.0",
     "bullmq": "^5.34.0",
     "ioredis": "^5.4.1",
     "next": "^16.3.6",
     "react": "^19.0.0",
-    "react-dom": "^19.0.0"
+    "react-dom": "^19.0.0",
+    "zod": "^4.6.5"
   },
   "devDependencies": {
     "@types/node": "^22.10.1",

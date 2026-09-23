@@ -1,7 +1,13 @@
 import Anthropic from "@anthropic-ai/sdk";
+import { zodOutputFormat } from "@anthropic-ai/sdk/helpers/zod";
+import { z } from "zod";
 import type { ProductName } from "@/lib/handlers/types";
 
-const PRODUCTS: ProductName[] = ["sales-agent", "monneyhub-zap", "normas-ia", "personai"];
+const PRODUCTS = ["sales-agent", "monneyhub-zap", "normas-ia", "personai"] as const;
+
+const ClassificationSchema = z.object({
+  product: z.enum(PRODUCTS),
+});
 
 const PRODUCT_DESCRIPTIONS: Record<ProductName, string> = {
   "sales-agent": "qualificação e atendimento comercial a leads/prospects",
@@ -11,13 +17,15 @@ const PRODUCT_DESCRIPTIONS: Record<ProductName, string> = {
   personai: "assistente pessoal de propósito geral, com memória de contexto do usuário",
 };
 
+const SYSTEM_PROMPT =
+  `Você classifica mensagens de WhatsApp recebidas entre estes produtos:\n` +
+  PRODUCTS.map((p) => `- ${p}: ${PRODUCT_DESCRIPTIONS[p]}`).join("\n");
+
 let client: Anthropic | undefined;
 
 function getClient(): Anthropic {
   if (!client) {
-    const apiKey = process.env.ANTHROPIC_API_KEY;
-    if (!apiKey) throw new Error("ANTHROPIC_API_KEY não configurada.");
-    client = new Anthropic({ apiKey });
+    client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
   }
   return client;
 }
@@ -26,36 +34,35 @@ function getClient(): Anthropic {
  * Decide qual produto trata a mensagem. Usa Claude quando há API key
  * configurada; sem ela (dev local, testes, ambiente ainda sem credencial),
  * cai num matcher por palavra-chave — determinístico e sem custo, mas
- * claramente mais rudimentar. `identifyProductWithClaude` fica isolado
- * pra o fallback ser trivial de testar sem mockar a SDK inteira.
+ * claramente mais rudimentar. Erro de API também cai no fallback: uma
+ * mensagem roteada por keyword é melhor do que mensagem não respondida.
  */
 export async function classifyIntent(text: string): Promise<ProductName> {
   if (!process.env.ANTHROPIC_API_KEY) {
     return classifyByKeyword(text);
   }
-  return classifyWithClaude(text);
+
+  try {
+    return await classifyWithClaude(text);
+  } catch (err) {
+    console.warn("[intent] classificação via Claude falhou, usando keyword:", err);
+    return classifyByKeyword(text);
+  }
 }
 
 async function classifyWithClaude(text: string): Promise<ProductName> {
-  const productList = PRODUCTS.map((p) => `- ${p}: ${PRODUCT_DESCRIPTIONS[p]}`).join("\n");
-
-  const message = await getClient().messages.create({
+  // Thinking desligado e saída estruturada: classificação é tarefa simples e
+  // sensível a latência (MonneyHub Zap exige resposta < 5s ponta a ponta).
+  const response = await getClient().messages.parse({
     model: "claude-sonnet-5",
-    max_tokens: 16,
-    system:
-      `Você classifica mensagens de WhatsApp recebidas entre estes produtos:\n${productList}\n\n` +
-      `Responda apenas com o nome exato de um dos produtos acima, nada mais.`,
+    max_tokens: 256,
+    thinking: { type: "disabled" },
+    system: SYSTEM_PROMPT,
     messages: [{ role: "user", content: text }],
+    output_config: { format: zodOutputFormat(ClassificationSchema) },
   });
 
-  const raw = message.content
-    .filter((block): block is Anthropic.TextBlock => block.type === "text")
-    .map((block) => block.text)
-    .join("")
-    .trim()
-    .toLowerCase();
-
-  return PRODUCTS.find((p) => raw.includes(p)) ?? classifyByKeyword(text);
+  return response.parsed_output?.product ?? classifyByKeyword(text);
 }
 
 export function classifyByKeyword(text: string): ProductName {

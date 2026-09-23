@@ -2,8 +2,12 @@
 
 export interface NormalizedMessage {
   tenantId: string;
+  /** phone_number_id do tenant na Meta — usado pra responder sem reconsultar o banco. */
+  phoneNumberId: string;
   /** wa_id (número) do remetente na Meta Business API. */
   userId: string;
+  /** wamid da mensagem — identidade estável, usada pra deduplicar reentrega. */
+  messageId: string;
   text: string;
   /** ISO 8601 */
   timestamp: string;

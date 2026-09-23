@@ -11,3 +11,20 @@ export async function identifyTenantByPhoneNumberId(
 ): Promise<Tenant | null> {
   return prisma.tenant.findUnique({ where: { whatsappPhoneNumberId: phoneNumberId } });
 }
+
+/**
+ * Versão em lote: um único POST de webhook pode trazer mensagens de vários
+ * números, então resolve todos numa consulta só em vez de uma por mensagem.
+ */
+export async function findTenantsByPhoneNumberIds(
+  phoneNumberIds: string[],
+): Promise<Map<string, Tenant>> {
+  const unique = [...new Set(phoneNumberIds)];
+  if (unique.length === 0) return new Map();
+
+  const tenants = await prisma.tenant.findMany({
+    where: { whatsappPhoneNumberId: { in: unique } },
+  });
+
+  return new Map(tenants.map((tenant) => [tenant.whatsappPhoneNumberId, tenant]));
+}

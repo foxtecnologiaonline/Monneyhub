@@ -3,7 +3,6 @@ import { getRedisConnection } from "@/lib/redis";
 import { WHATSAPP_INBOUND_QUEUE } from "@/lib/queue";
 import { routeMessage } from "@/lib/intent/router";
 import { sendWhatsAppTextMessage } from "@/lib/whatsapp/send";
-import { prisma } from "@/lib/db";
 import type { NormalizedMessage } from "@/lib/handlers/types";
 
 /**
@@ -13,20 +12,19 @@ import type { NormalizedMessage } from "@/lib/handlers/types";
  */
 async function processJob(job: Job<NormalizedMessage>): Promise<void> {
   const message = job.data;
+  const startedAt = Date.now();
   const { product, response } = await routeMessage(message);
 
-  const tenant = await prisma.tenant.findUnique({ where: { id: message.tenantId } });
-  if (!tenant) {
-    throw new Error(`Tenant ${message.tenantId} não encontrado ao tentar responder.`);
-  }
-
   await sendWhatsAppTextMessage({
-    phoneNumberId: tenant.whatsappPhoneNumberId,
+    phoneNumberId: message.phoneNumberId,
     to: message.userId,
     text: response.replyText,
   });
 
-  console.info(`[whatsapp-inbound] tenant=${message.tenantId} produto=${product} respondido`);
+  console.info(
+    `[whatsapp-inbound] tenant=${message.tenantId} produto=${product} ` +
+      `latencia=${Date.now() - startedAt}ms respondido`,
+  );
 }
 
 const worker = new Worker<NormalizedMessage>(WHATSAPP_INBOUND_QUEUE, processJob, {

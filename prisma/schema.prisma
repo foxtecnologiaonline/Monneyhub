@@ -9,7 +9,7 @@ generator client {
 datasource db {
   provider = "postgresql"
   url      = env("DATABASE_URL")
-  schemas  = ["core", "memory"]
+  schemas  = ["core", "memory", "monneyhub"]
 }
 
 // --- schema "core" ---------------------------------------------------
@@ -53,4 +53,112 @@ model MemoryEntry {
   @@unique([tenantId, userId, kind, key])
   @@index([tenantId, userId])
   @@schema("memory")
+}
+
+// --- schema "monneyhub" ------------------------------------------------
+// Produto MonneyHub (Fase 1): histórico transacional do MEI e as previsões
+// de fluxo de caixa geradas pelo MEI-Oráculo via Amazon Forecast.
+
+enum TransactionType {
+  INCOME
+  EXPENSE
+
+  @@schema("monneyhub")
+}
+
+model Transaction {
+  id          String          @id @default(uuid())
+  tenantId    String
+  userId      String
+  occurredOn  DateTime        @db.Date
+  /// Valor sempre positivo; o sinal vem de `type`. Decimal porque é dado
+  /// contábil — float em dinheiro acumula erro.
+  amount      Decimal         @db.Decimal(14, 2)
+  type        TransactionType
+  description String?
+  createdAt   DateTime        @default(now())
+
+  @@index([tenantId, userId, occurredOn])
+  @@schema("monneyhub")
+}
+
+enum ForecastStatus {
+  /// Menos de 6 meses de histórico — não dá pra treinar ainda.
+  AWAITING_DATA
+  TRAINING
+  READY
+  FAILED
+
+  @@schema("monneyhub")
+}
+
+model ForecastRun {
+  id             String         @id @default(uuid())
+  tenantId       String
+  userId         String
+  status         ForecastStatus
+  /// Meses de histórico disponíveis quando a rodada começou.
+  historyMonths  Int
+  /// Saldo no momento do treino — a previsão é acumulada a partir dele.
+  openingBalance Decimal        @db.Decimal(14, 2)
+  predictorArn   String?
+  forecastArn    String?
+  /// Erro percentual médio medido em backtest. Exposto internamente — não
+  /// prometemos precisão sem medir (critério de aceite do escopo).
+  mape           Float?
+  failureReason  String?
+  trainedAt      DateTime?
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
+
+  points ForecastPoint[]
+
+  @@index([tenantId, userId, createdAt])
+  @@schema("monneyhub")
+}
+
+model ForecastPoint {
+  id    String      @id @default(uuid())
+  runId String
+  run   ForecastRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+  /// Série diária de saldo previsto — o alerta precisa saber em que dia o
+  /// P50 cruza zero, não só o valor no dia 30/60/90.
+  date  DateTime    @db.Date
+  p10   Float
+  p50   Float
+  p90   Float
+
+  @@unique([runId, date])
+  @@index([runId, date])
+  @@schema("monneyhub")
+}
+
+/// Estágios do pipeline do Amazon Forecast. Import, treino e geração são
+/// assíncronos e levam horas — o job semanal cria o pipeline e um tick
+/// frequente avança um estágio por vez consultando o ARN corrente.
+enum PipelineStage {
+  IMPORTING
+  TRAINING
+  FORECASTING
+  QUERYING
+  DONE
+  FAILED
+
+  @@schema("monneyhub")
+}
+
+model ForecastPipeline {
+  id            String        @id @default(uuid())
+  stage         PipelineStage
+  s3Path        String
+  importJobArn  String?
+  predictorArn  String?
+  forecastArn   String?
+  failureReason String?
+  startedAt     DateTime      @default(now())
+  finishedAt    DateTime?
+  updatedAt     DateTime      @updatedAt
+
+  @@index([stage])
+  @@schema("monneyhub")
 }

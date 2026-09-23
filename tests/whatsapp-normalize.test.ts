@@ -33,9 +33,21 @@ describe("normalizeWhatsAppPayload", () => {
     expect(result[0]).toMatchObject({
       phoneNumberId: "1234567890",
       waId: "5511999990000",
+      messageId: "wamid.1",
       text: "oi",
     });
     expect(result[0]!.timestamp).toBe(new Date(1700000000 * 1000).toISOString());
+  });
+
+  it("não quebra com timestamp inválido", () => {
+    const payload = buildPayload([
+      { from: "5511999990000", id: "wamid.1", timestamp: "não-é-número", type: "text", text: { body: "oi" } },
+    ]);
+
+    const result = normalizeWhatsAppPayload(payload);
+
+    expect(result).toHaveLength(1);
+    expect(() => new Date(result[0]!.timestamp).toISOString()).not.toThrow();
   });
 
   it("ignora mensagens que não são de texto", () => {
