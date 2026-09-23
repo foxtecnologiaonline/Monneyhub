@@ -12,7 +12,9 @@ const ClassificationSchema = z.object({
 const PRODUCT_DESCRIPTIONS: Record<ProductName, string> = {
   "sales-agent": "qualificação e atendimento comercial a leads/prospects",
   "monneyhub-zap":
-    "consulta financeira do MEI via WhatsApp (saldo, previsão de fluxo de caixa, lançamentos)",
+    "qualquer assunto financeiro: saldo, extrato, lançamentos e previsão de fluxo de caixa " +
+    "do MEI, e também pergunta livre sobre mercado e finanças pessoais (CDI, Selic, juros, " +
+    "inflação, investimento, dólar)",
   "normas-ia": "dúvidas sobre normas regulatórias e compliance",
   personai: "assistente pessoal de propósito geral, com memória de contexto do usuário",
 };
@@ -53,6 +55,8 @@ export async function classifyIntent(text: string): Promise<ProductName> {
 async function classifyWithClaude(text: string): Promise<ProductName> {
   // Thinking desligado e saída estruturada: classificação é tarefa simples e
   // sensível a latência (MonneyHub Zap exige resposta < 5s ponta a ponta).
+  // Com o thinking adaptativo do Sonnet 5 ligado, o raciocínio consumiria o
+  // max_tokens e a resposta voltaria vazia, sem erro nenhum.
   const response = await getClient().messages.parse({
     model: "claude-sonnet-5",
     max_tokens: 256,
@@ -67,8 +71,19 @@ async function classifyWithClaude(text: string): Promise<ProductName> {
 
 export function classifyByKeyword(text: string): ProductName {
   const lower = text.toLowerCase();
-  if (/(saldo|fluxo de caixa|extrato|lançamento|\bmei\b)/.test(lower)) return "monneyhub-zap";
+
+  // Normas antes de finanças: "norma do MEI" é regulatório, não financeiro.
   if (/(norma|regulament|compliance|licença|fiscaliza)/.test(lower)) return "normas-ia";
+
+  if (
+    /(saldo|fluxo de caixa|extrato|lançamento|previs|\bmei\b|\bcdi\b|selic|juros|inflação|investi|aplicaç|rendiment|poupança|tesouro direto|\bcdb\b|dólar|câmbio)/.test(
+      lower,
+    )
+  ) {
+    return "monneyhub-zap";
+  }
+
   if (/(orçamento|comprar|preço|plano|proposta|contratar)/.test(lower)) return "sales-agent";
+
   return "personai";
 }

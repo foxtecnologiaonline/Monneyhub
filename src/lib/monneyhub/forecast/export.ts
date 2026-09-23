@@ -1,19 +1,10 @@
-import type { TransactionType } from "@prisma/client";
+import type { ExportableTransaction } from "@/lib/finance/queries";
 
 /**
  * Pipeline de export do histórico transacional pro formato que o Amazon
  * Forecast aceita (TARGET_TIME_SERIES): `item_id,timestamp,target_value`,
  * sem cabeçalho, timestamp diário em AAAA-MM-DD.
  */
-
-export interface ExportableTransaction {
-  tenantId: string;
-  userId: string;
-  occurredOn: Date;
-  /** Sempre positivo — o sinal vem de `type`. */
-  amount: number;
-  type: TransactionType;
-}
 
 export interface DailyNetFlowRow {
   itemId: string;
@@ -37,9 +28,10 @@ function toIsoDate(date: Date): string {
 }
 
 /**
- * Agrega o fluxo líquido por dia (entrada − saída). Dias sem transação não
- * viram linha: o Forecast preenche a lacuna na featurização, e emitir zero
- * pra todo dia inflaria o dataset sem acrescentar sinal.
+ * Agrega o fluxo líquido por dia. Os valores já vêm assinados do banco
+ * (negativo = saída), então é soma direta. Dias sem transação não viram
+ * linha: o Forecast preenche a lacuna na featurização, e emitir zero pra
+ * todo dia inflaria o dataset sem acrescentar sinal.
  */
 export function aggregateDailyNetFlow(
   transactions: ExportableTransaction[],
@@ -48,15 +40,14 @@ export function aggregateDailyNetFlow(
 
   for (const transaction of transactions) {
     const itemId = buildItemId(transaction.tenantId, transaction.userId);
-    const date = toIsoDate(transaction.occurredOn);
+    const date = toIsoDate(transaction.occurredAt);
     const key = `${itemId}|${date}`;
-    const signed = transaction.type === "EXPENSE" ? -transaction.amount : transaction.amount;
 
     const existing = totals.get(key);
     if (existing) {
-      existing.netAmount += signed;
+      existing.netAmount += transaction.amount;
     } else {
-      totals.set(key, { itemId, date, netAmount: signed });
+      totals.set(key, { itemId, date, netAmount: transaction.amount });
     }
   }
 

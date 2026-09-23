@@ -1,99 +1,86 @@
-import type { ProductHandler } from "@/lib/handlers/types";
-import { getCurrentBalance, getRecentTransactions } from "@/lib/monneyhub/balance";
-import { getLatestForecast } from "@/lib/monneyhub/forecast/read";
-import { askMarketQuestion } from "@/lib/monneyhub/zap/perplexity";
-import { analyzeOutboundText } from "@/lib/monneyhub/zap/content-safety";
-import {
-  applyInvestmentDisclaimer,
-  classifyFinancialIntent,
-  type FinancialIntent,
-} from "@/lib/monneyhub/zap/rules";
+import type { HandlerResponse, ProductHandler } from "@/lib/handlers/types";
+import { classifyZapIntent, type ZapIntent } from "@/lib/monneyhub-zap/classify";
+import { withInvestmentDisclaimer } from "@/lib/monneyhub-zap/disclaimer";
+import { getAccountSummary, getRecentTransactions } from "@/lib/finance/queries";
+import { getLatestForecast, type ForecastView } from "@/lib/monneyhub/forecast/read";
+import { askMarketQuestion, isRouterConfigured } from "@/lib/perplexity/router";
+import { analyzeOutboundText } from "@/lib/safety/content-safety";
 
+// Orçamento de latência: o critério de aceite é resposta em menos de 5s
+// ponta a ponta. Router API fica com a maior fatia, Content Safety com o
+// resto, e ainda sobra margem pro envio via Graph API.
+const ROUTER_TIMEOUT_MS = 3000;
+const CONTENT_SAFETY_TIMEOUT_MS = 1200;
+
+const NO_ACCOUNT_REPLY =
+  "Não encontrei uma conta MonneyHub ligada a este número. Fale com o suporte pra vincular.";
+const UNAVAILABLE_REPLY =
+  "Não consegui buscar essa informação de mercado agora. Tenta de novo em instantes.";
 const BLOCKED_REPLY =
-  "Não consigo responder isso por aqui. Se precisar, fale com nosso time de atendimento.";
-const MARKET_FALLBACK =
-  "Não consegui consultar o dado de mercado agora. Tenta de novo em alguns minutos?";
+  "Prefiro não responder isso por aqui. Se for sobre sua conta, pergunta do saldo ou do extrato que eu te mostro.";
 
-const brl = new Intl.NumberFormat("pt-BR", { style: "currency", currency: "BRL" });
-const shortDate = new Intl.DateTimeFormat("pt-BR", { day: "2-digit", month: "2-digit" });
+const CURRENCY_LABEL: Record<string, string> = { BRL: "R$", USD: "US$", EUR: "€" };
 
-/**
- * MonneyHub Zap (Fase 1): assistente financeiro no WhatsApp. Consulta de
- * saldo/extrato/previsão sai do Postgres; pergunta aberta de mercado vai
- * pra Router API da Perplexity. Toda resposta passa por Content Safety e
- * ganha disclaimer quando toca em investimento.
- */
-export const monneyhubZapHandler: ProductHandler = async (message) => {
-  const intent = classifyFinancialIntent(message.text);
-  const answer = await buildAnswer(intent, message.tenantId, message.userId, message.text);
+function formatMoney(amount: string, currency: string): string {
+  const symbol = CURRENCY_LABEL[currency] ?? currency;
+  return `${symbol} ${amount.replace(".", ",")}`;
+}
 
-  const withDisclaimer = applyInvestmentDisclaimer(answer, message.text);
-  const verdict = await analyzeOutboundText(withDisclaimer);
-
-  if (!verdict.safe) {
-    console.warn(
-      `[monneyhub-zap] resposta bloqueada pelo Content Safety: ` +
-        verdict.flagged.map((f) => `${f.category}=${f.severity}`).join(", "),
-    );
+async function buildAnswer(
+  intent: ZapIntent,
+  message: Parameters<ProductHandler>[0],
+): Promise<{ text: string; modelGenerated: boolean }> {
+  if (intent === "BALANCE") {
+    const summary = await getAccountSummary(message.tenantId, message.userId);
+    if (!summary) return { text: NO_ACCOUNT_REPLY, modelGenerated: false };
     return {
-      replyText: BLOCKED_REPLY,
-      meta: { product: "monneyhub-zap", intent, blocked: true },
+      text: `Seu saldo atual é ${formatMoney(summary.balance, summary.currency)}.`,
+      modelGenerated: false,
     };
   }
 
-  return {
-    replyText: withDisclaimer,
-    meta: { product: "monneyhub-zap", intent },
-  };
-};
-
-async function buildAnswer(
-  intent: FinancialIntent,
-  tenantId: string,
-  userId: string,
-  question: string,
-): Promise<string> {
-  switch (intent) {
-    case "BALANCE": {
-      const balance = await getCurrentBalance(tenantId, userId);
-      return `Seu saldo atual é ${brl.format(balance)}.`;
+  if (intent === "STATEMENT") {
+    const transactions = await getRecentTransactions(message.tenantId, message.userId);
+    if (!transactions) return { text: NO_ACCOUNT_REPLY, modelGenerated: false };
+    if (transactions.length === 0) {
+      return { text: "Não há lançamentos registrados na sua conta ainda.", modelGenerated: false };
     }
 
-    case "STATEMENT": {
-      const transactions = await getRecentTransactions(tenantId, userId, 5);
-      if (transactions.length === 0) return "Você ainda não tem lançamentos registrados.";
+    const lines = transactions.map((item) => {
+      const date = item.occurredAt.toLocaleDateString("pt-BR", { timeZone: "America/Sao_Paulo" });
+      return `• ${date} — ${item.description}: ${formatMoney(item.amount, "BRL")}`;
+    });
+    return { text: `Seus últimos lançamentos:\n${lines.join("\n")}`, modelGenerated: false };
+  }
 
-      const lines = transactions.map((transaction) => {
-        const signal = transaction.type === "EXPENSE" ? "−" : "+";
-        const label = transaction.description ?? "lançamento";
-        return `${shortDate.format(transaction.occurredOn)} ${signal}${brl.format(
-          transaction.amount.toNumber(),
-        )} — ${label}`;
-      });
+  if (intent === "FORECAST") {
+    // Previsão é dado nosso (MEI-Oráculo), montado por template — não é
+    // saída de LLM, então não precisa fail-closed no Content Safety.
+    const forecast = await getLatestForecast(message.tenantId, message.userId);
+    return { text: formatForecast(forecast), modelGenerated: false };
+  }
 
-      return `Seus últimos lançamentos:\n${lines.join("\n")}`;
-    }
+  if (!isRouterConfigured()) {
+    return { text: UNAVAILABLE_REPLY, modelGenerated: false };
+  }
 
-    case "FORECAST":
-      return formatForecast(await getLatestForecast(tenantId, userId));
-
-    case "MARKET":
-      try {
-        return await askMarketQuestion(question);
-      } catch (err) {
-        console.warn("[monneyhub-zap] Router API falhou:", err);
-        return MARKET_FALLBACK;
-      }
+  try {
+    const answer = await askMarketQuestion(message.text, ROUTER_TIMEOUT_MS);
+    return { text: answer.text, modelGenerated: true };
+  } catch (error) {
+    console.error("[monneyhub-zap] Router API indisponível:", error);
+    return { text: UNAVAILABLE_REPLY, modelGenerated: false };
   }
 }
 
-function formatForecast(forecast: Awaited<ReturnType<typeof getLatestForecast>>): string {
-  if (forecast.status === "AWAITING_DATA" || forecast.status === "NO_RUN") {
+/** Previsão do MEI-Oráculo em linguagem de WhatsApp — sempre faixa, nunca número único. */
+function formatForecast(forecast: ForecastView): string {
+  if (forecast.status === "NO_RUN" || forecast.status === "AWAITING_DATA") {
     const missing = forecast.missingMonths;
-    const complement = missing
+    const complemento = missing
       ? ` Faltam cerca de ${missing} ${missing === 1 ? "mês" : "meses"} de histórico.`
       : "";
-    return `Ainda não tenho histórico suficiente pra projetar seu fluxo de caixa.${complement}`;
+    return `Ainda não tenho histórico suficiente pra projetar seu fluxo de caixa.${complemento}`;
   }
 
   if (forecast.status !== "READY") {
@@ -104,14 +91,50 @@ function formatForecast(forecast: Awaited<ReturnType<typeof getLatestForecast>>)
     .filter((horizon) => horizon.realista !== null)
     .map(
       (horizon) =>
-        `Em ${horizon.horizonDays} dias: ${brl.format(horizon.realista!)} ` +
-        `(entre ${brl.format(horizon.pessimista!)} e ${brl.format(horizon.otimista!)})`,
+        `• Em ${horizon.horizonDays} dias: ${formatMoney(horizon.realista!.toFixed(2), "BRL")} ` +
+        `(entre ${formatMoney(horizon.pessimista!.toFixed(2), "BRL")} e ` +
+        `${formatMoney(horizon.otimista!.toFixed(2), "BRL")})`,
     );
 
+  if (linhas.length === 0) {
+    return "Sua previsão está sendo atualizada. Me pergunta de novo daqui a pouco.";
+  }
+
   const alerta = forecast.negativeBalanceAlert
-    ? `\n\nAtenção: no cenário realista seu saldo fica negativo em ` +
-      `${forecast.negativeBalanceAlert.crossingDate} — ${forecast.negativeBalanceAlert.leadDays} dias a partir de hoje.`
+    ? `\n\n⚠️ No cenário realista seu saldo fica negativo em ` +
+      `${forecast.negativeBalanceAlert.crossingDate} — daqui a ` +
+      `${forecast.negativeBalanceAlert.leadDays} dias.`
     : "";
 
   return `Projeção do seu saldo:\n${linhas.join("\n")}${alerta}`;
 }
+
+/**
+ * MonneyHub Zap (Fase 1): classifica a pergunta financeira, responde com
+ * dado interno (saldo, extrato, previsão do MEI-Oráculo) ou dado de mercado
+ * (Perplexity Router API), passa tudo por Content Safety e carimba o
+ * disclaimer quando o assunto encosta em investimento.
+ */
+export const monneyhubZapHandler: ProductHandler = async (message): Promise<HandlerResponse> => {
+  const intent = classifyZapIntent(message.text);
+  const answer = await buildAnswer(intent, message);
+
+  const verdict = await analyzeOutboundText(answer.text, {
+    timeoutMs: CONTENT_SAFETY_TIMEOUT_MS,
+    failClosed: answer.modelGenerated,
+  });
+
+  const safeText = verdict.allowed ? answer.text : BLOCKED_REPLY;
+  const replyText = withInvestmentDisclaimer(safeText, message.text);
+
+  return {
+    replyText,
+    meta: {
+      product: "monneyhub-zap",
+      intent,
+      modelGenerated: answer.modelGenerated,
+      contentSafety: verdict.status,
+      blocked: !verdict.allowed,
+    },
+  };
+};

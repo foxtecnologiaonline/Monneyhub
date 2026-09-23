@@ -12,9 +12,11 @@ import { getForecastClient, uploadTrainingCsv } from "@/lib/monneyhub/forecast/a
 import {
   aggregateDailyNetFlow,
   buildTargetTimeSeriesCsv,
-  type ExportableTransaction,
 } from "@/lib/monneyhub/forecast/export";
-import { streamTransactionsForExport } from "@/lib/monneyhub/balance";
+import {
+  streamTransactionsForExport,
+  type ExportableTransaction,
+} from "@/lib/finance/queries";
 import { FORECAST_HORIZON_DAYS } from "@/lib/monneyhub/forecast/bands";
 import type { ForecastPipeline } from "@prisma/client";
 

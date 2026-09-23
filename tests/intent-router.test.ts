@@ -14,6 +14,10 @@ vi.mock("@/lib/handlers/index", () => ({
   },
 }));
 
+// productHandlers inteiro já é mockado acima — o roteador é testado pelo
+// despacho, não pela lógica interna de cada produto (essa tem teste próprio
+// em tests/monneyhub-zap-handler.test.ts). Sem isso, o teste de roteamento
+// acabaria batendo em Postgres/Perplexity/Content Safety de verdade.
 function stub(product: string) {
   calls.push(product);
   return { replyText: `resposta de ${product}`, meta: { product } };

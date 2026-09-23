@@ -4,25 +4,20 @@ import {
   buildTargetTimeSeriesCsv,
   buildItemId,
   parseItemId,
-  type ExportableTransaction,
 } from "@/lib/monneyhub/forecast/export";
 import { mergeQuantileSeries } from "@/lib/monneyhub/forecast/runs";
+import type { ExportableTransaction } from "@/lib/finance/queries";
 
 const base: ExportableTransaction = {
   tenantId: "t1",
   userId: "u1",
-  occurredOn: new Date("2026-03-10T00:00:00Z"),
+  occurredAt: new Date("2026-03-10T00:00:00Z"),
   amount: 100,
-  type: "INCOME",
 };
 
 describe("aggregateDailyNetFlow", () => {
-  it("soma entradas e subtrai saídas no mesmo dia", () => {
-    const rows = aggregateDailyNetFlow([
-      base,
-      { ...base, amount: 30, type: "EXPENSE" },
-      { ...base, amount: 20, type: "INCOME" },
-    ]);
+  it("soma entradas e saídas assinadas no mesmo dia", () => {
+    const rows = aggregateDailyNetFlow([base, { ...base, amount: -30 }, { ...base, amount: 20 }]);
 
     expect(rows).toHaveLength(1);
     expect(rows[0]!.netAmount).toBe(90);
@@ -42,8 +37,8 @@ describe("aggregateDailyNetFlow", () => {
 
   it("ordena por item e data", () => {
     const rows = aggregateDailyNetFlow([
-      { ...base, occurredOn: new Date("2026-03-12T00:00:00Z") },
-      { ...base, occurredOn: new Date("2026-03-11T00:00:00Z") },
+      { ...base, occurredAt: new Date("2026-03-12T00:00:00Z") },
+      { ...base, occurredAt: new Date("2026-03-11T00:00:00Z") },
     ]);
 
     expect(rows.map((row) => row.date)).toEqual(["2026-03-11", "2026-03-12"]);

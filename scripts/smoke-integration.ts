@@ -10,7 +10,7 @@ import { randomUUID } from "node:crypto";
 import { prisma } from "@/lib/db";
 import { getWhatsappInboundQueue, WHATSAPP_INBOUND_QUEUE } from "@/lib/queue";
 import { getRedisConnection } from "@/lib/redis";
-import { getCurrentBalance, getHistoryRange } from "@/lib/monneyhub/balance";
+import { getCurrentBalance, getHistoryRange } from "@/lib/finance/queries";
 import { monthsOfHistory, hasEnoughHistory } from "@/lib/monneyhub/forecast/bands";
 import { getLatestForecast } from "@/lib/monneyhub/forecast/read";
 import { readMemory, writeMemory, deleteAllMemory } from "@/lib/memory/service";
@@ -72,18 +72,27 @@ async function main(): Promise<void> {
   const sameId = waiting.filter((job) => job.id === duplicated.messageId);
   check("mesma mensagem entra na fila uma vez só", sameId.length === 1, `(${sameId.length})`);
 
-  console.log("\n[3] MonneyHub — saldo e histórico");
+  console.log("\n[3] MonneyHub — saldo e histórico (schema finance)");
+  const account = await prisma.account.create({
+    data: { tenantId: tenant.id, userId: veteran, name: "Conta veterana" },
+  });
   await prisma.transaction.createMany({
     data: [
-      { tenantId: tenant.id, userId: veteran, occurredOn: daysAgo(240), amount: 5000, type: "INCOME" },
-      { tenantId: tenant.id, userId: veteran, occurredOn: daysAgo(120), amount: 1500, type: "EXPENSE" },
-      { tenantId: tenant.id, userId: veteran, occurredOn: daysAgo(5), amount: 700.5, type: "INCOME" },
-      { tenantId: tenant.id, userId: novato, occurredOn: daysAgo(40), amount: 300, type: "INCOME" },
+      { accountId: account.id, description: "Venda", occurredAt: daysAgo(240), amount: 5000 },
+      { accountId: account.id, description: "Fornecedor", occurredAt: daysAgo(120), amount: -1500 },
+      { accountId: account.id, description: "Venda", occurredAt: daysAgo(5), amount: 700.5 },
     ],
+  });
+  // Novato tem conta mas histórico abaixo do gate de 6 meses.
+  const novatoAccount = await prisma.account.create({
+    data: { tenantId: tenant.id, userId: novato, name: "Conta novata" },
+  });
+  await prisma.transaction.create({
+    data: { accountId: novatoAccount.id, description: "Venda", occurredAt: daysAgo(40), amount: 300 },
   });
 
   const balance = await getCurrentBalance(tenant.id, veteran);
-  check("saldo = entradas − saídas", Math.abs(balance - 4200.5) < 0.001, `(${balance})`);
+  check("saldo = soma das transações assinadas", Math.abs(balance - 4200.5) < 0.001, `(${balance})`);
 
   const range = await getHistoryRange(tenant.id, veteran);
   const months = range ? monthsOfHistory(range.first, range.last) : 0;
@@ -136,7 +145,7 @@ async function main(): Promise<void> {
 
   console.log("\n[5] MonneyHub Zap — handler real contra o banco");
   const saldo = await monneyhubZapHandler(message("qual meu saldo?", tenant.id, veteran));
-  check("responde saldo formatado em BRL", saldo.replyText.includes("4.200,50"), saldo.replyText);
+  check("responde saldo formatado em reais", saldo.replyText.includes("4200,50"), saldo.replyText);
 
   const extrato = await monneyhubZapHandler(message("me manda o extrato", tenant.id, veteran));
   check("responde extrato com lançamentos", extrato.replyText.includes("R$"), extrato.replyText);
@@ -153,6 +162,15 @@ async function main(): Promise<void> {
     "usuário sem histórico recebe 'aguardando dado suficiente'",
     semDado.replyText.includes("histórico suficiente"),
     semDado.replyText,
+  );
+
+  const semConta = await monneyhubZapHandler(
+    message("qual meu saldo?", tenant.id, `sem-conta-${suffix}`),
+  );
+  check(
+    "usuário sem conta vinculada recebe aviso, não erro",
+    semConta.replyText.includes("Não encontrei uma conta"),
+    semConta.replyText,
   );
 
   console.log("\n[6] Memória — escrita, leitura e exclusão total (LGPD)");
@@ -198,7 +216,7 @@ async function main(): Promise<void> {
 
   console.log("\n[7] Limpeza");
   await prisma.forecastRun.deleteMany({ where: { tenantId: tenant.id } });
-  await prisma.transaction.deleteMany({ where: { tenantId: tenant.id } });
+  await prisma.account.deleteMany({ where: { tenantId: tenant.id } }); // cascade em Transaction
   await prisma.tenant.delete({ where: { id: tenant.id } });
   await queue.obliterate({ force: true });
   check("dados do smoke removidos", true);

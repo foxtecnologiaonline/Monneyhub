@@ -19,9 +19,10 @@ Escopo completo em [`docs/`](./docs).
   quando `ANTHROPIC_API_KEY` está configurada, fallback por keyword quando
   não está ou quando a API falha), despacha pro handler do produto certo
   (`src/lib/handlers/`) e envia a resposta via Graph API.
-- Handlers de `sales-agent`, `normas-ia` e `personai` seguem **placeholders**
-  até as fases 2 e 5; todos implementam a mesma interface `ProductHandler`
-  (`src/lib/handlers/types.ts`).
+- Handlers dos 4 produtos conversacionais implementam a interface comum
+  `ProductHandler` (`src/lib/handlers/types.ts`). `monneyhub-zap` está
+  implementado (Fase 1); `sales-agent`, `normas-ia` e `personai` seguem
+  **placeholders** até as fases 2 e 5.
 
 ### Camada C — Serviço de Memória/Contexto do Usuário
 
@@ -40,9 +41,9 @@ Camada B (scoring via SageMaker) fica pra Fase 3, com Radar de Vendas.
 ### MEI-Oráculo — previsão de fluxo de caixa
 
 - `npm run worker:forecast` roda dois jobs repetíveis:
-  - `weekly-training` (segunda, 03:00): exporta o histórico transacional pro
-    formato do Amazon Forecast (`item_id,timestamp,target_value`), sobe pro
-    S3 e abre o import job.
+  - `weekly-training` (segunda, 03:00): exporta o histórico transacional
+    (`src/lib/finance/queries.ts`) pro formato do Amazon Forecast
+    (`item_id,timestamp,target_value`), sobe pro S3 e abre o import job.
   - `tick` (15min): avança o pipeline um estágio por vez
     (`IMPORTING → TRAINING → FORECASTING → QUERYING → DONE`) — import, treino
     e geração levam horas, então nenhum job fica bloqueado esperando.
@@ -63,20 +64,42 @@ Camada B (scoring via SageMaker) fica pra Fase 3, com Radar de Vendas.
 
 ### MonneyHub Zap — assistente financeiro no WhatsApp
 
-Handler plugado no Gateway da Camada A (`src/lib/handlers/monneyhub-zap.ts`):
+Escopo em [`docs/05-monneyhub-zap.md`](./docs/05-monneyhub-zap.md). O handler
+(`src/lib/handlers/monneyhub-zap.ts`), plugado no Gateway da Camada A, segue
+sempre o mesmo caminho: **classifica → responde → guarda de conteúdo →
+disclaimer**.
 
-- Classifica a pergunta em `BALANCE` / `STATEMENT` / `FORECAST` / `MARKET`
-  por palavra-chave — sem mais um ida-e-volta de LLM, porque o alvo é
-  resposta em menos de 5s ponta a ponta.
-- Saldo, extrato e previsão saem do Postgres; pergunta aberta de mercado vai
-  pra **Perplexity Router API** (timeout de 3,5s, com resposta de fallback se
-  falhar — o usuário sempre recebe algo).
-- Toda resposta passa por **Azure AI Content Safety** antes de sair; acima do
-  limiar de severidade, a resposta é trocada por uma mensagem neutra.
-- Resposta que toca em investimento carrega sempre o disclaimer
-  "Isto não é recomendação de investimento" (idempotente, sem duplicar).
+- **Sub-classificação** (`src/lib/monneyhub-zap/classify.ts`) separa
+  `BALANCE` / `STATEMENT` / `FORECAST` (dado interno) de `MARKET` (pergunta
+  livre). Determinística por keyword de propósito — é o passo mais barato do
+  fluxo e não pode consumir o orçamento de latência da Router API.
+- **Dado interno** (`src/lib/finance/queries.ts`) lê saldo, extrato e a
+  previsão do MEI-Oráculo. Saldo é **derivado** da soma das transações, não
+  materializado na conta — nunca diverge do extrato. Valores em `Decimal`,
+  não float.
+- **Dado de mercado** (`src/lib/perplexity/router.ts`) consulta a Perplexity
+  Router API. Endpoint e modelo configuráveis por env.
+- **Guarda de conteúdo** (`src/lib/safety/content-safety.ts`) — Azure AI
+  Content Safety em **toda** resposta antes de enviar. Quando o serviço não
+  responde: texto gerado por modelo é bloqueado (*fail closed*), texto que
+  montamos a partir do banco/MEI-Oráculo passa (*fail open*) — é template
+  nosso, não saída de LLM. Sem credencial: passa em dev, **bloqueia em
+  produção**.
+- **Disclaimer** (`src/lib/monneyhub-zap/disclaimer.ts`) carimba "não é
+  recomendação de investimento" quando a resposta **ou a pergunta** encosta
+  em investimento. Padrão deliberadamente largo: falso positivo custa uma
+  linha, falso negativo custa exposição regulatória.
 
-Fora do escopo v1, conforme o documento: transação financeira real (PIX,
+Critérios de aceite do escopo, e onde estão cobertos:
+
+| Critério | Onde |
+| --- | --- |
+| 100% das respostas que mencionam investimento levam o disclaimer | `tests/monneyhub-zap-disclaimer.test.ts` |
+| Latência < 5s incluindo Router API | orçamento explícito no handler: Router 3000ms + Content Safety 1200ms, via `AbortSignal.timeout` |
+| Erro percentual médio (MAPE) documentado e exposto internamente | `ForecastRun.mape`, lido do backtest do Forecast |
+| Alerta de saldo negativo com ≥ 15 dias de antecedência | `meetsLeadTimeTarget` em `NegativeBalanceAlert` |
+
+Fora de escopo no v1, conforme os docs: transação financeira real (PIX,
 pagamento) e recomendação automática de ação financeira.
 
 ## Setup
@@ -86,7 +109,7 @@ npm install
 cp .env.example .env   # preencha as credenciais
 npx prisma generate
 npx prisma migrate deploy
-npm run prisma:seed    # cria um tenant de exemplo pra testar o webhook local
+npm run prisma:seed    # cria um tenant + conta de exemplo pra testar localmente
 ```
 
 Os recursos do Amazon Forecast (dataset, dataset group e role IAM) são
@@ -106,7 +129,7 @@ npm run worker:forecast # MEI-Oráculo: treino semanal + tick do pipeline
 ```bash
 npm run typecheck
 npm run lint
-npm test                # 76 testes unitários, sem infra
+npm test                # testes unitários, sem infra
 npm run smoke           # smoke de integração: precisa de Postgres e Redis reais
 ```
 
@@ -118,7 +141,13 @@ próprios dados.
 
 ## Variáveis de ambiente
 
-Ver [`.env.example`](./.env.example).
+Ver [`.env.example`](./.env.example): `DATABASE_URL`, `REDIS_URL`,
+`META_WEBHOOK_VERIFY_TOKEN`, `META_APP_SECRET`, `META_ACCESS_TOKEN`,
+`ANTHROPIC_API_KEY`, `INTERNAL_API_KEY`, `AWS_REGION`, `FORECAST_S3_BUCKET`,
+`FORECAST_DATASET_ARN`, `FORECAST_DATASET_GROUP_ARN`, `FORECAST_ROLE_ARN`,
+`PERPLEXITY_API_KEY`, `PERPLEXITY_BASE_URL`, `PERPLEXITY_MODEL`,
+`AZURE_CONTENT_SAFETY_ENDPOINT`, `AZURE_CONTENT_SAFETY_KEY`,
+`AZURE_CONTENT_SAFETY_BLOCK_SEVERITY`.
 
 ## Débito técnico conhecido (sinalizado, não bloqueia a entrega)
 
@@ -127,12 +156,22 @@ Ver [`.env.example`](./.env.example).
   correlacionados). É a aproximação usual e coerente com o propósito da
   faixa — comunicar incerteza, não cravar percentil. Documentado em
   `src/lib/monneyhub/forecast/bands.ts`.
-- **Provisionamento de tenant é manual** (`prisma:seed` ou Prisma Studio).
-  Cadastro real entra quando o primeiro produto precisar onboardar tenants.
+- **Provisionamento de tenant e conta é manual** (`prisma:seed` ou Prisma
+  Studio). Não há endpoint/admin ainda pra cadastrar tenant ou vincular
+  número de WhatsApp a conta — o handler responde "conta não encontrada"
+  quando o `wa_id` não bate com nenhuma. Cadastro real fica pra quando o
+  MonneyHub Zap precisar onboardar tenants de verdade.
 - **Classificação financeira do Zap é por palavra-chave.** Escolha
   consciente pela latência; se a precisão do roteamento virar problema, o
   caminho é um classificador dedicado, não encadear mais uma chamada de LLM
   no caminho crítico.
+- **Latência de 5s é orçada, não medida.** Os timeouts do handler garantem o
+  teto por construção, mas ainda não há medição ponta a ponta com a Router
+  API real — fica pra validação em staging.
+- **Formato da Perplexity Router API assumido como compatível com
+  `chat/completions`.** Base URL e modelo são env justamente por isso: se a
+  rota real divergir, é configuração, não reescrita. Confirmar contra a conta
+  real antes de produção.
 - **Sem teste automatizado dos caminhos AWS/Azure/Perplexity.** O smoke cobre
   Postgres e Redis reais; as integrações externas são exercitadas só por
   mock. Um ambiente de staging com credenciais fecharia essa lacuna.

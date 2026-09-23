@@ -2,22 +2,19 @@
 CREATE SCHEMA IF NOT EXISTS "core";
 
 -- CreateSchema
-CREATE SCHEMA IF NOT EXISTS "memory";
+CREATE SCHEMA IF NOT EXISTS "finance";
 
 -- CreateSchema
-CREATE SCHEMA IF NOT EXISTS "monneyhub";
+CREATE SCHEMA IF NOT EXISTS "memory";
 
 -- CreateEnum
 CREATE TYPE "memory"."MemoryKind" AS ENUM ('PREFERENCE', 'FACT', 'INTERACTION');
 
 -- CreateEnum
-CREATE TYPE "monneyhub"."TransactionType" AS ENUM ('INCOME', 'EXPENSE');
+CREATE TYPE "finance"."ForecastStatus" AS ENUM ('AWAITING_DATA', 'TRAINING', 'READY', 'FAILED');
 
 -- CreateEnum
-CREATE TYPE "monneyhub"."ForecastStatus" AS ENUM ('AWAITING_DATA', 'TRAINING', 'READY', 'FAILED');
-
--- CreateEnum
-CREATE TYPE "monneyhub"."PipelineStage" AS ENUM ('IMPORTING', 'TRAINING', 'FORECASTING', 'QUERYING', 'DONE', 'FAILED');
+CREATE TYPE "finance"."PipelineStage" AS ENUM ('IMPORTING', 'TRAINING', 'FORECASTING', 'QUERYING', 'DONE', 'FAILED');
 
 -- CreateTable
 CREATE TABLE "core"."Tenant" (
@@ -45,25 +42,36 @@ CREATE TABLE "memory"."MemoryEntry" (
 );
 
 -- CreateTable
-CREATE TABLE "monneyhub"."Transaction" (
+CREATE TABLE "finance"."Account" (
     "id" TEXT NOT NULL,
     "tenantId" TEXT NOT NULL,
     "userId" TEXT NOT NULL,
-    "occurredOn" DATE NOT NULL,
+    "name" TEXT NOT NULL,
+    "currency" TEXT NOT NULL DEFAULT 'BRL',
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" TIMESTAMP(3) NOT NULL,
+
+    CONSTRAINT "Account_pkey" PRIMARY KEY ("id")
+);
+
+-- CreateTable
+CREATE TABLE "finance"."Transaction" (
+    "id" TEXT NOT NULL,
+    "accountId" TEXT NOT NULL,
+    "description" TEXT NOT NULL,
     "amount" DECIMAL(14,2) NOT NULL,
-    "type" "monneyhub"."TransactionType" NOT NULL,
-    "description" TEXT,
+    "occurredAt" TIMESTAMP(3) NOT NULL,
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
     CONSTRAINT "Transaction_pkey" PRIMARY KEY ("id")
 );
 
 -- CreateTable
-CREATE TABLE "monneyhub"."ForecastRun" (
+CREATE TABLE "finance"."ForecastRun" (
     "id" TEXT NOT NULL,
     "tenantId" TEXT NOT NULL,
     "userId" TEXT NOT NULL,
-    "status" "monneyhub"."ForecastStatus" NOT NULL,
+    "status" "finance"."ForecastStatus" NOT NULL,
     "historyMonths" INTEGER NOT NULL,
     "openingBalance" DECIMAL(14,2) NOT NULL,
     "predictorArn" TEXT,
@@ -78,7 +86,7 @@ CREATE TABLE "monneyhub"."ForecastRun" (
 );
 
 -- CreateTable
-CREATE TABLE "monneyhub"."ForecastPoint" (
+CREATE TABLE "finance"."ForecastPoint" (
     "id" TEXT NOT NULL,
     "runId" TEXT NOT NULL,
     "date" DATE NOT NULL,
@@ -90,9 +98,9 @@ CREATE TABLE "monneyhub"."ForecastPoint" (
 );
 
 -- CreateTable
-CREATE TABLE "monneyhub"."ForecastPipeline" (
+CREATE TABLE "finance"."ForecastPipeline" (
     "id" TEXT NOT NULL,
-    "stage" "monneyhub"."PipelineStage" NOT NULL,
+    "stage" "finance"."PipelineStage" NOT NULL,
     "s3Path" TEXT NOT NULL,
     "importJobArn" TEXT,
     "predictorArn" TEXT,
@@ -115,19 +123,26 @@ CREATE INDEX "MemoryEntry_tenantId_userId_idx" ON "memory"."MemoryEntry"("tenant
 CREATE UNIQUE INDEX "MemoryEntry_tenantId_userId_kind_key_key" ON "memory"."MemoryEntry"("tenantId", "userId", "kind", "key");
 
 -- CreateIndex
-CREATE INDEX "Transaction_tenantId_userId_occurredOn_idx" ON "monneyhub"."Transaction"("tenantId", "userId", "occurredOn");
+CREATE UNIQUE INDEX "Account_tenantId_userId_key" ON "finance"."Account"("tenantId", "userId");
 
 -- CreateIndex
-CREATE INDEX "ForecastRun_tenantId_userId_createdAt_idx" ON "monneyhub"."ForecastRun"("tenantId", "userId", "createdAt");
+CREATE INDEX "Transaction_accountId_occurredAt_idx" ON "finance"."Transaction"("accountId", "occurredAt");
 
 -- CreateIndex
-CREATE INDEX "ForecastPoint_runId_date_idx" ON "monneyhub"."ForecastPoint"("runId", "date");
+CREATE INDEX "ForecastRun_tenantId_userId_createdAt_idx" ON "finance"."ForecastRun"("tenantId", "userId", "createdAt");
 
 -- CreateIndex
-CREATE UNIQUE INDEX "ForecastPoint_runId_date_key" ON "monneyhub"."ForecastPoint"("runId", "date");
+CREATE INDEX "ForecastPoint_runId_date_idx" ON "finance"."ForecastPoint"("runId", "date");
 
 -- CreateIndex
-CREATE INDEX "ForecastPipeline_stage_idx" ON "monneyhub"."ForecastPipeline"("stage");
+CREATE UNIQUE INDEX "ForecastPoint_runId_date_key" ON "finance"."ForecastPoint"("runId", "date");
+
+-- CreateIndex
+CREATE INDEX "ForecastPipeline_stage_idx" ON "finance"."ForecastPipeline"("stage");
 
 -- AddForeignKey
-ALTER TABLE "monneyhub"."ForecastPoint" ADD CONSTRAINT "ForecastPoint_runId_fkey" FOREIGN KEY ("runId") REFERENCES "monneyhub"."ForecastRun"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+ALTER TABLE "finance"."Transaction" ADD CONSTRAINT "Transaction_accountId_fkey" FOREIGN KEY ("accountId") REFERENCES "finance"."Account"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "finance"."ForecastPoint" ADD CONSTRAINT "ForecastPoint_runId_fkey" FOREIGN KEY ("runId") REFERENCES "finance"."ForecastRun"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+

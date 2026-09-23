@@ -6,7 +6,7 @@ import {
   getCurrentBalance,
   getHistoryRange,
   listForecastableUsers,
-} from "@/lib/monneyhub/balance";
+} from "@/lib/finance/queries";
 import {
   hasEnoughHistory,
   monthsOfHistory,

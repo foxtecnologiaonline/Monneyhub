@@ -9,7 +9,7 @@ generator client {
 datasource db {
   provider = "postgresql"
   url      = env("DATABASE_URL")
-  schemas  = ["core", "memory", "monneyhub"]
+  schemas  = ["core", "memory", "finance"]
 }
 
 // --- schema "core" ---------------------------------------------------
@@ -55,32 +55,49 @@ model MemoryEntry {
   @@schema("memory")
 }
 
-// --- schema "monneyhub" ------------------------------------------------
-// Produto MonneyHub (Fase 1): histórico transacional do MEI e as previsões
-// de fluxo de caixa geradas pelo MEI-Oráculo via Amazon Forecast.
+// --- schema "finance" --------------------------------------------------
+// Dado financeiro interno do MonneyHub (Fase 1): o que o MonneyHub Zap
+// consulta pra responder saldo/extrato e o histórico que o MEI-Oráculo
+// usa como série de treino.
+// Decimal e não float/int: centavo de real não sobrevive a binário flutuante.
 
-enum TransactionType {
-  INCOME
-  EXPENSE
+model Account {
+  id       String @id @default(uuid())
+  tenantId String
+  /// wa_id do usuário no WhatsApp — mesma chave que o Gateway normaliza.
+  userId   String
+  name     String
+  currency String @default("BRL")
 
-  @@schema("monneyhub")
+  // O saldo é derivado das transações, não materializado: manter saldo
+  // armazenado exige dois lugares em sincronia e ele diverge calado quando
+  // um lançamento entra fora do caminho feliz.
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  transactions Transaction[]
+
+  // v1: uma conta por usuário por tenant.
+  @@unique([tenantId, userId])
+  @@schema("finance")
 }
 
 model Transaction {
-  id          String          @id @default(uuid())
-  tenantId    String
-  userId      String
-  occurredOn  DateTime        @db.Date
-  /// Valor sempre positivo; o sinal vem de `type`. Decimal porque é dado
-  /// contábil — float em dinheiro acumula erro.
-  amount      Decimal         @db.Decimal(14, 2)
-  type        TransactionType
-  description String?
-  createdAt   DateTime        @default(now())
+  id          String   @id @default(uuid())
+  accountId   String
+  account     Account  @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  description String
+  /// Negativo = saída, positivo = entrada.
+  amount      Decimal  @db.Decimal(14, 2)
+  occurredAt  DateTime
+  createdAt   DateTime @default(now())
 
-  @@index([tenantId, userId, occurredOn])
-  @@schema("monneyhub")
+  @@index([accountId, occurredAt])
+  @@schema("finance")
 }
+
+// --- MEI-Oráculo -------------------------------------------------------
+// Previsão de fluxo de caixa gerada pelo Amazon Forecast.
 
 enum ForecastStatus {
   /// Menos de 6 meses de histórico — não dá pra treinar ainda.
@@ -89,7 +106,7 @@ enum ForecastStatus {
   READY
   FAILED
 
-  @@schema("monneyhub")
+  @@schema("finance")
 }
 
 model ForecastRun {
@@ -114,7 +131,7 @@ model ForecastRun {
   points ForecastPoint[]
 
   @@index([tenantId, userId, createdAt])
-  @@schema("monneyhub")
+  @@schema("finance")
 }
 
 model ForecastPoint {
@@ -130,7 +147,7 @@ model ForecastPoint {
 
   @@unique([runId, date])
   @@index([runId, date])
-  @@schema("monneyhub")
+  @@schema("finance")
 }
 
 /// Estágios do pipeline do Amazon Forecast. Import, treino e geração são
@@ -144,7 +161,7 @@ enum PipelineStage {
   DONE
   FAILED
 
-  @@schema("monneyhub")
+  @@schema("finance")
 }
 
 model ForecastPipeline {
@@ -160,5 +177,5 @@ model ForecastPipeline {
   updatedAt     DateTime      @updatedAt
 
   @@index([stage])
-  @@schema("monneyhub")
+  @@schema("finance")
 }
