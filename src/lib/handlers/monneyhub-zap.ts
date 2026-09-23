@@ -4,6 +4,7 @@ import { withInvestmentDisclaimer } from "@/lib/monneyhub-zap/disclaimer";
 import { getAccountSummary, getRecentTransactions } from "@/lib/finance/queries";
 import { askMarketQuestion, isRouterConfigured } from "@/lib/perplexity/router";
 import { analyzeOutboundText } from "@/lib/safety/content-safety";
+import { buildForecastReport } from "@/lib/mei-oraculo/service";
 
 // Orçamento de latência: o critério de aceite é resposta em menos de 5s
 // ponta a ponta. Router API fica com a maior fatia, Content Safety com o
@@ -35,6 +36,49 @@ function formatMoney(amount: string, currency: string): string {
   }
 }
 
+/**
+ * Previsão vem do MEI-Oráculo, não da Router API: é pergunta sobre o caixa
+ * do próprio usuário, e mandar isso pra uma busca externa seria ao mesmo
+ * tempo inútil e vazamento de contexto.
+ *
+ * Sempre faixa, nunca número único — o doc do MEI-Oráculo é explícito em
+ * evitar falsa precisão. E nenhuma sugestão de ação: recomendar corte de
+ * gasto está fora de escopo do v1.
+ */
+async function buildForecastReply(message: Parameters<ProductHandler>[0]): Promise<string> {
+  const report = await buildForecastReport(message.tenantId, message.userId);
+
+  if (report.status === "NO_ACCOUNT") return NO_ACCOUNT_REPLY;
+
+  if (report.status === "INSUFFICIENT_HISTORY") {
+    const months = Math.floor(report.historyMonths);
+    return (
+      `Ainda não dá pra projetar seu caixa com confiança: tenho ${months} ` +
+      `${months === 1 ? "mês" : "meses"} de histórico e preciso de ${report.minHistoryMonths}. ` +
+      `Seguindo seus lançamentos, chego lá.`
+    );
+  }
+
+  const currency = report.currency ?? "BRL";
+  const lines = report.horizons.map(
+    (horizon) =>
+      `• ${horizon.horizonDays} dias: entre ${formatMoney(horizon.p10.toFixed(2), currency)} e ` +
+      `${formatMoney(horizon.p90.toFixed(2), currency)} — cenário provável ` +
+      `${formatMoney(horizon.p50.toFixed(2), currency)}`,
+  );
+
+  const parts = [`Projeção do seu caixa:\n${lines.join("\n")}`];
+
+  if (report.alert) {
+    parts.push(
+      `⚠️ No cenário provável, seu saldo fica negativo em cerca de ` +
+        `${report.alert.crossesAtDay} dias.`,
+    );
+  }
+
+  return parts.join("\n\n");
+}
+
 async function buildAnswer(
   intent: ZapIntent,
   message: Parameters<ProductHandler>[0],
@@ -60,6 +104,10 @@ async function buildAnswer(
       return `• ${date} — ${item.description}: ${formatMoney(item.amount, statement.currency)}`;
     });
     return { text: `Seus últimos lançamentos:\n${lines.join("\n")}`, modelGenerated: false };
+  }
+
+  if (intent === "FORECAST") {
+    return { text: await buildForecastReply(message), modelGenerated: false };
   }
 
   if (!isRouterConfigured()) {

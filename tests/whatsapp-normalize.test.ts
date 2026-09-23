@@ -33,6 +33,7 @@ describe("normalizeWhatsAppPayload", () => {
     expect(result[0]).toMatchObject({
       phoneNumberId: "1234567890",
       waId: "5511999990000",
+      waMessageId: "wamid.1",
       text: "oi",
     });
     expect(result[0]!.timestamp).toBe(new Date(1700000000 * 1000).toISOString());
@@ -49,6 +50,14 @@ describe("normalizeWhatsAppPayload", () => {
 
   it("retorna lista vazia quando não há entry/changes", () => {
     expect(normalizeWhatsAppPayload({})).toEqual([]);
+  });
+
+  it("ignora mensagem de texto sem id — não dá pra deduplicar sem wamid", () => {
+    const payload = buildPayload([
+      { from: "5511999990000", timestamp: "1700000000", type: "text", text: { body: "oi" } },
+    ]);
+
+    expect(normalizeWhatsAppPayload(payload)).toEqual([]);
   });
 
   it("lida com múltiplas mensagens no mesmo payload", () => {

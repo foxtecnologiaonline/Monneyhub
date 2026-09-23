@@ -3,6 +3,7 @@ import { verifyWebhookChallenge, isValidWhatsAppSignature } from "@/lib/whatsapp
 import { normalizeWhatsAppPayload } from "@/lib/whatsapp/normalize";
 import { identifyTenantByPhoneNumberId } from "@/lib/tenant";
 import { getWhatsappInboundQueue } from "@/lib/queue";
+import { claimWhatsAppMessage } from "@/lib/whatsapp/dedupe";
 import type { NormalizedMessage } from "@/lib/handlers/types";
 
 /**
@@ -41,6 +42,11 @@ export async function POST(request: NextRequest) {
 
   await Promise.all(
     messages.map(async (message) => {
+      if (!(await claimWhatsAppMessage(message.waMessageId))) {
+        console.info(`[whatsapp] reentrega ignorada: ${message.waMessageId}`);
+        return;
+      }
+
       const tenant = await identifyTenantByPhoneNumberId(message.phoneNumberId);
       if (!tenant) {
         console.warn(`Mensagem de phone_number_id desconhecido: ${message.phoneNumberId}`);
