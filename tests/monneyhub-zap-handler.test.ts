@@ -49,9 +49,23 @@ describe("monneyhubZapHandler — dado interno", () => {
 
     const result = await monneyhubZapHandler(message("qual meu saldo?"));
 
-    expect(result.replyText).toContain("R$ 1200,50");
+    expect(result.replyText).toContain("R$ 1.200,50");
     expect(result.meta).toMatchObject({ intent: "BALANCE", modelGenerated: false });
     expect(askMarketQuestion).not.toHaveBeenCalled();
+  });
+
+  it("usa a moeda da conta, não real fixo, no extrato", async () => {
+    vi.mocked(getRecentTransactions).mockResolvedValue({
+      currency: "USD",
+      transactions: [
+        { description: "Stripe", amount: "1500.00", occurredAt: new Date("2026-09-20T12:00:00Z") },
+      ],
+    });
+
+    const result = await monneyhubZapHandler(message("me manda o extrato"));
+
+    expect(result.replyText).toContain("US$");
+    expect(result.replyText).not.toContain("R$");
   });
 
   it("avisa quando não há conta vinculada ao número", async () => {
@@ -63,9 +77,12 @@ describe("monneyhubZapHandler — dado interno", () => {
   });
 
   it("lista os últimos lançamentos", async () => {
-    vi.mocked(getRecentTransactions).mockResolvedValue([
-      { description: "Mercado", amount: "-150.00", occurredAt: new Date("2026-09-20T12:00:00Z") },
-    ]);
+    vi.mocked(getRecentTransactions).mockResolvedValue({
+      currency: "BRL",
+      transactions: [
+        { description: "Mercado", amount: "-150.00", occurredAt: new Date("2026-09-20T12:00:00Z") },
+      ],
+    });
 
     const result = await monneyhubZapHandler(message("me manda o extrato"));
 

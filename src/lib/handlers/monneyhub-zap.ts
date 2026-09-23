@@ -18,11 +18,21 @@ const UNAVAILABLE_REPLY =
 const BLOCKED_REPLY =
   "Prefiro não responder isso por aqui. Se for sobre sua conta, pergunta do saldo ou do extrato que eu te mostro.";
 
-const CURRENCY_LABEL: Record<string, string> = { BRL: "R$", USD: "US$", EUR: "€" };
-
+/**
+ * Intl e não concatenação manual: sem separador de milhar, "R$ 1200,50" é
+ * o tipo de detalhe que faz o MEI desconfiar do número. O replace troca o
+ * espaço não-quebrável que o Intl insere por espaço comum — WhatsApp lida
+ * melhor, e é o que os testes leem.
+ */
 function formatMoney(amount: string, currency: string): string {
-  const symbol = CURRENCY_LABEL[currency] ?? currency;
-  return `${symbol} ${amount.replace(".", ",")}`;
+  const value = Number(amount);
+  try {
+    return new Intl.NumberFormat("pt-BR", { style: "currency", currency })
+      .format(value)
+      .replace(/ /g, " ");
+  } catch {
+    return `${currency} ${value.toFixed(2).replace(".", ",")}`;
+  }
 }
 
 async function buildAnswer(
@@ -39,15 +49,15 @@ async function buildAnswer(
   }
 
   if (intent === "STATEMENT") {
-    const transactions = await getRecentTransactions(message.tenantId, message.userId);
-    if (!transactions) return { text: NO_ACCOUNT_REPLY, modelGenerated: false };
-    if (transactions.length === 0) {
+    const statement = await getRecentTransactions(message.tenantId, message.userId);
+    if (!statement) return { text: NO_ACCOUNT_REPLY, modelGenerated: false };
+    if (statement.transactions.length === 0) {
       return { text: "Não há lançamentos registrados na sua conta ainda.", modelGenerated: false };
     }
 
-    const lines = transactions.map((item) => {
+    const lines = statement.transactions.map((item) => {
       const date = item.occurredAt.toLocaleDateString("pt-BR", { timeZone: "America/Sao_Paulo" });
-      return `• ${date} — ${item.description}: ${formatMoney(item.amount, "BRL")}`;
+      return `• ${date} — ${item.description}: ${formatMoney(item.amount, statement.currency)}`;
     });
     return { text: `Seus últimos lançamentos:\n${lines.join("\n")}`, modelGenerated: false };
   }

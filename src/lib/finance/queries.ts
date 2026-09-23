@@ -12,6 +12,11 @@ export interface TransactionLine {
   occurredAt: Date;
 }
 
+export interface StatementResult {
+  currency: string;
+  transactions: TransactionLine[];
+}
+
 export async function getAccountSummary(
   tenantId: string,
   userId: string,
@@ -30,28 +35,32 @@ export async function getAccountSummary(
   };
 }
 
+/** Uma query só: conta e lançamentos vêm no mesmo round trip. */
 export async function getRecentTransactions(
   tenantId: string,
   userId: string,
   limit = 5,
-): Promise<TransactionLine[] | null> {
+): Promise<StatementResult | null> {
   const account = await prisma.account.findUnique({
     where: { tenantId_userId: { tenantId, userId } },
-    select: { id: true },
+    select: {
+      currency: true,
+      transactions: {
+        orderBy: { occurredAt: "desc" },
+        take: limit,
+        select: { description: true, amount: true, occurredAt: true },
+      },
+    },
   });
 
   if (!account) return null;
 
-  const transactions = await prisma.transaction.findMany({
-    where: { accountId: account.id },
-    orderBy: { occurredAt: "desc" },
-    take: limit,
-    select: { description: true, amount: true, occurredAt: true },
-  });
-
-  return transactions.map((item) => ({
-    description: item.description,
-    amount: item.amount.toFixed(2),
-    occurredAt: item.occurredAt,
-  }));
+  return {
+    currency: account.currency,
+    transactions: account.transactions.map((item) => ({
+      description: item.description,
+      amount: item.amount.toFixed(2),
+      occurredAt: item.occurredAt,
+    })),
+  };
 }

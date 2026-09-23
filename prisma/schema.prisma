@@ -91,3 +91,24 @@ model Transaction {
   @@index([accountId, occurredAt])
   @@schema("finance")
 }
+
+/// Execução do MEI-Oráculo. Guardar o MAPE por execução é o que permite
+/// "expor a precisão internamente" em vez de prometer número sem medir.
+model ForecastRun {
+  id            String   @id @default(uuid())
+  tenantId      String
+  userId        String
+  runAt         DateTime @default(now())
+  /// OK | INSUFFICIENT_HISTORY
+  status        String
+  /// [{ horizonDays, p10, p50, p90 }]
+  horizons      Json
+  historyMonths Decimal  @db.Decimal(6, 2)
+  mape          Decimal? @db.Decimal(8, 2)
+  alertLeadDays Int?
+  alertAtDay    Int?
+  exportKey     String?
+
+  @@index([tenantId, userId, runAt])
+  @@schema("finance")
+}

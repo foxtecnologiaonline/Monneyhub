@@ -73,6 +73,50 @@ Critérios de aceite do escopo, e onde estão cobertos:
 Fora de escopo no v1, conforme o doc: transação financeira real (PIX,
 pagamento) — só consulta e informação.
 
+## Fase 1 — MonneyHub MEI-Oráculo (implementado)
+
+Escopo em [`docs/04-monneyhub-mei-oraculo.md`](./docs/04-monneyhub-mei-oraculo.md).
+Prevê fluxo de caixa em 30/60/90 dias a partir do histórico transacional.
+
+- `GET /api/forecast/:userId?tenantId=...` — previsão em faixa
+  (P10 pessimista / P50 realista / P90 otimista), API interna.
+- `npm run worker:forecast` — job semanal: exporta o histórico, roda a
+  previsão, persiste a execução em `ForecastRun` e enfileira alerta na fila
+  `forecast-alert` quando o P50 cruza zero dentro de 30 dias.
+- **Histórico mínimo de 6 meses** (`src/lib/mei-oraculo/series.ts`). Abaixo
+  disso o endpoint devolve `INSUFFICIENT_HISTORY` e nenhuma faixa — o
+  produto não chuta.
+- **Faixa, não número único** (`src/lib/mei-oraculo/forecast.ts`): fluxo
+  diário como passeio aleatório com deriva; a projeção em `t` dias tem média
+  `t·μ` e desvio `√t·σ`. O `√t` é o que faz a faixa abrir com o horizonte —
+  90 dias visivelmente mais incerto que 30, que é o recado do produto.
+- **MAPE medido, não prometido** (`src/lib/mei-oraculo/backtest.ts`): teste
+  retroativo corta os últimos 30 dias, prevê a partir do corte e compara com
+  o que aconteceu. Pontos com saldo quase zero são descartados (o
+  denominador iria a zero); sem ponto medível retorna `null` em vez de
+  publicar número inventado.
+- **Export** (`src/lib/mei-oraculo/export.ts`) no formato
+  `TARGET_TIME_SERIES` (`item_id,timestamp,target_value`), para S3 ou R2.
+
+Critérios de aceite do escopo, e onde estão cobertos:
+
+| Critério | Onde |
+| --- | --- |
+| MAPE documentado e exposto internamente | `ForecastRun.mape` + campo `mape` no endpoint; `tests/mei-oraculo-backtest.test.ts` |
+| Alerta de saldo negativo com 15+ dias de antecedência em teste retroativo | `tests/mei-oraculo-backtest.test.ts`, `tests/mei-oraculo-forecast.test.ts` |
+
+Fora de escopo no v1, conforme o doc: recomendação automática de ação
+financeira ("corte o gasto X").
+
+> **Decisão de arquitetura a confirmar.** O doc nomeia Amazon Forecast como
+> provedor. A previsão foi implementada como baseline estatístico local
+> atrás de uma função única (`forecastBalance`), e não acoplada ao serviço
+> gerenciado: assim o produto funciona e tem MAPE medível hoje, e trocar
+> pelo modelo gerenciado é substituir essa função. Vale confirmar a
+> disponibilidade do Amazon Forecast para conta nova antes de fechar a
+> decisão — se não estiver disponível, o SageMaker da Camada B (Fase 3)
+> atende sem mudar o produto em volta.
+
 ## Setup
 
 ```bash
@@ -86,8 +130,9 @@ npm run prisma:seed    # cria um tenant de exemplo pra testar o webhook local
 ## Rodando
 
 ```bash
-npm run dev             # Next.js (webhook + API de memória)
+npm run dev             # Next.js (webhook + APIs internas)
 npm run worker:whatsapp # worker BullMQ (classificação + despacho + resposta)
+npm run worker:forecast # job semanal do MEI-Oráculo (previsão + alerta)
 ```
 
 ## Qualidade
