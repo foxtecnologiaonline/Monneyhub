@@ -19,9 +19,9 @@ Escopo completo em [`docs/`](./docs).
   handler do produto certo (`src/lib/handlers/`) e envia a resposta de volta
   via Graph API.
 - Handlers dos 4 produtos conversacionais (`sales-agent`, `monneyhub-zap`,
-  `normas-ia`, `personai`) são **placeholders** — cada um implementa a
-  interface comum `ProductHandler` (`src/lib/handlers/types.ts`) e será
-  substituído na fase do roadmap correspondente.
+  `normas-ia`, `personai`) implementam a interface comum `ProductHandler`
+  (`src/lib/handlers/types.ts`). `monneyhub-zap` está implementado (Fase 1);
+  os outros três seguem placeholders até a fase do roadmap correspondente.
 
 ### Camada C — Serviço de Memória/Contexto do Usuário
 
@@ -37,6 +37,41 @@ Escopo completo em [`docs/`](./docs).
 Camada B (client/job runner de Scoring via SageMaker) fica pra Fase 3,
 quando Radar de Vendas entra em jogo — conforme a ordem de execução do
 roadmap.
+
+## Fase 1 — MonneyHub Zap (implementado)
+
+Escopo em [`docs/05-monneyhub-zap.md`](./docs/05-monneyhub-zap.md). O handler
+(`src/lib/handlers/monneyhub-zap.ts`) recebe a mensagem já normalizada do
+Gateway e segue sempre o mesmo caminho: **classifica → responde → guarda de
+conteúdo → disclaimer**.
+
+- **Sub-classificação** (`src/lib/monneyhub-zap/classify.ts`) separa
+  `BALANCE` / `STATEMENT` (dado interno) de `MARKET` (pergunta livre).
+  Determinística por keyword de propósito — é o passo mais barato do fluxo e
+  não pode consumir o orçamento de latência da Router API.
+- **Dado interno** (`src/lib/finance/queries.ts`) lê saldo e lançamentos do
+  schema `finance` (Postgres). Valores em `Decimal`, não float.
+- **Dado de mercado** (`src/lib/perplexity/router.ts`) consulta a Perplexity
+  Router API. Endpoint e modelo são configuráveis por env.
+- **Guarda de conteúdo** (`src/lib/safety/content-safety.ts`) — Azure AI
+  Content Safety em **toda** resposta antes de enviar. Quando o serviço não
+  responde: texto gerado por modelo é bloqueado (*fail closed*), texto que
+  montamos a partir do banco passa (*fail open*) — é template nosso, não
+  saída de LLM. Sem credencial: passa em dev, **bloqueia em produção**.
+- **Disclaimer** (`src/lib/monneyhub-zap/disclaimer.ts`) carimba
+  "não é recomendação de investimento" quando a resposta **ou a pergunta**
+  encosta em investimento. O padrão é um superconjunto deliberado: falso
+  positivo custa uma linha, falso negativo custa exposição regulatória.
+
+Critérios de aceite do escopo, e onde estão cobertos:
+
+| Critério | Onde |
+| --- | --- |
+| 100% das respostas que mencionam investimento levam o disclaimer | `tests/monneyhub-zap-disclaimer.test.ts` |
+| Latência < 5s incluindo Router API | orçamento explícito no handler: Router 3000ms + Content Safety 1200ms, via `AbortSignal.timeout` |
+
+Fora de escopo no v1, conforme o doc: transação financeira real (PIX,
+pagamento) — só consulta e informação.
 
 ## Setup
 
@@ -68,7 +103,8 @@ npm run build
 
 Ver [`.env.example`](./.env.example): `DATABASE_URL`, `REDIS_URL`,
 `META_WEBHOOK_VERIFY_TOKEN`, `META_APP_SECRET`, `META_ACCESS_TOKEN`,
-`ANTHROPIC_API_KEY`, `INTERNAL_API_KEY`.
+`ANTHROPIC_API_KEY`, `INTERNAL_API_KEY`, `PERPLEXITY_API_KEY`,
+`AZURE_CONTENT_SAFETY_ENDPOINT`, `AZURE_CONTENT_SAFETY_KEY`.
 
 ## Débito técnico conhecido (sinalizado, não bloqueia a entrega)
 
@@ -82,5 +118,15 @@ Ver [`.env.example`](./.env.example): `DATABASE_URL`, `REDIS_URL`,
   onboardar tenants de verdade.
 - **Sem testes de integração** contra Postgres/Redis reais — os testes
   unitários (`npm test`) cobrem a lógica pura (normalização, classificação,
-  roteamento, serviço de memória) com Prisma/BullMQ mockados. Rodar contra
-  infra real fica como próximo passo antes de produção.
+  roteamento, serviço de memória, MonneyHub Zap) com Prisma/BullMQ/HTTP
+  mockados. Rodar contra infra real fica como próximo passo antes de produção.
+- **Latência de 5s é orçada, não medida.** Os timeouts do handler garantem o
+  teto por construção, mas ainda não há medição ponta a ponta com a Router
+  API real — fica pra validação em staging.
+- **Formato da Perplexity Router API assumido como compatível com
+  `chat/completions`.** Base URL e modelo são env justamente por isso: se a
+  rota real divergir, é configuração, não reescrita. Confirmar contra a conta
+  real antes de produção.
+- **Provisionamento de conta financeira é manual** (`prisma:seed`). Não há
+  ainda vínculo automático entre número de WhatsApp e conta MonneyHub — o
+  handler responde "conta não encontrada" quando o `wa_id` não bate.

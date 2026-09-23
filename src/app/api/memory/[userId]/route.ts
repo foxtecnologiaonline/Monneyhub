@@ -4,8 +4,11 @@ import { readMemory, writeMemory, deleteAllMemory, MemoryKind } from "@/lib/memo
 
 type RouteContext = { params: Promise<{ userId: string }> };
 
+// Object.hasOwn e não `in`: `in` enxerga a cadeia de protótipo, então
+// kind="constructor"/"toString" passariam pela validação e só estourariam
+// lá no Prisma, virando 500 em vez de 400.
 function isMemoryKind(value: unknown): value is MemoryKind {
-  return typeof value === "string" && value in MemoryKind;
+  return typeof value === "string" && Object.hasOwn(MemoryKind, value);
 }
 
 /** GET /api/memory/:userId?tenantId=...&kind=PREFERENCE|FACT|INTERACTION */

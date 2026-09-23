@@ -9,7 +9,7 @@ generator client {
 datasource db {
   provider = "postgresql"
   url      = env("DATABASE_URL")
-  schemas  = ["core", "memory"]
+  schemas  = ["core", "memory", "finance"]
 }
 
 // --- schema "core" ---------------------------------------------------
@@ -53,4 +53,41 @@ model MemoryEntry {
   @@unique([tenantId, userId, kind, key])
   @@index([tenantId, userId])
   @@schema("memory")
+}
+
+// --- schema "finance" --------------------------------------------------
+// Dado financeiro interno do MonneyHub (Fase 1). É o que o MonneyHub Zap
+// consulta pra responder saldo/extrato sem depender de fonte externa.
+// Decimal e não float/int: centavo de real não sobrevive a binário flutuante.
+
+model Account {
+  id        String   @id @default(uuid())
+  tenantId  String
+  /// wa_id do usuário no WhatsApp — mesma chave que o Gateway normaliza.
+  userId    String
+  name      String
+  balance   Decimal  @db.Decimal(14, 2)
+  currency  String   @default("BRL")
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  transactions Transaction[]
+
+  // v1: uma conta por usuário por tenant.
+  @@unique([tenantId, userId])
+  @@schema("finance")
+}
+
+model Transaction {
+  id          String   @id @default(uuid())
+  accountId   String
+  account     Account  @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  description String
+  /// Negativo = saída, positivo = entrada.
+  amount      Decimal  @db.Decimal(14, 2)
+  occurredAt  DateTime
+  createdAt   DateTime @default(now())
+
+  @@index([accountId, occurredAt])
+  @@schema("finance")
 }

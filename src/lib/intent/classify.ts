@@ -6,7 +6,8 @@ const PRODUCTS: ProductName[] = ["sales-agent", "monneyhub-zap", "normas-ia", "p
 const PRODUCT_DESCRIPTIONS: Record<ProductName, string> = {
   "sales-agent": "qualificação e atendimento comercial a leads/prospects",
   "monneyhub-zap":
-    "consulta financeira do MEI via WhatsApp (saldo, previsão de fluxo de caixa, lançamentos)",
+    "qualquer assunto financeiro: saldo, extrato e lançamentos do MEI, e também pergunta " +
+    "livre sobre mercado e finanças pessoais (CDI, Selic, juros, inflação, investimento, dólar)",
   "normas-ia": "dúvidas sobre normas regulatórias e compliance",
   personai: "assistente pessoal de propósito geral, com memória de contexto do usuário",
 };
@@ -41,7 +42,11 @@ async function classifyWithClaude(text: string): Promise<ProductName> {
 
   const message = await getClient().messages.create({
     model: "claude-sonnet-5",
-    max_tokens: 16,
+    // Thinking é adaptativo por padrão no Sonnet 5: sem desligar, o raciocínio
+    // consome o max_tokens e a resposta volta vazia — o classificador cairia
+    // sempre no fallback por keyword sem erro nenhum.
+    thinking: { type: "disabled" },
+    max_tokens: 256,
     system:
       `Você classifica mensagens de WhatsApp recebidas entre estes produtos:\n${productList}\n\n` +
       `Responda apenas com o nome exato de um dos produtos acima, nada mais.`,
@@ -60,8 +65,14 @@ async function classifyWithClaude(text: string): Promise<ProductName> {
 
 export function classifyByKeyword(text: string): ProductName {
   const lower = text.toLowerCase();
-  if (/(saldo|fluxo de caixa|extrato|lançamento|\bmei\b)/.test(lower)) return "monneyhub-zap";
   if (/(norma|regulament|compliance|licença|fiscaliza)/.test(lower)) return "normas-ia";
+  if (
+    /(saldo|fluxo de caixa|extrato|lançamento|\bmei\b|\bcdi\b|selic|juros|inflação|investi|aplicaç|rendiment|poupança|tesouro direto|\bcdb\b|dólar|câmbio)/.test(
+      lower,
+    )
+  ) {
+    return "monneyhub-zap";
+  }
   if (/(orçamento|comprar|preço|plano|proposta|contratar)/.test(lower)) return "sales-agent";
   return "personai";
 }

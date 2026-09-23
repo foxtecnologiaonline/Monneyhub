@@ -4,6 +4,25 @@ vi.mock("@/lib/intent/classify", () => ({
   classifyIntent: vi.fn(),
 }));
 
+// O handler do MonneyHub Zap deixou de ser stub na Fase 1: sem isolar as
+// dependências externas dele, este teste de roteamento passaria a bater em
+// Postgres de verdade.
+vi.mock("@/lib/finance/queries", () => ({
+  getAccountSummary: vi.fn().mockResolvedValue(null),
+  getRecentTransactions: vi.fn().mockResolvedValue(null),
+}));
+
+vi.mock("@/lib/perplexity/router", () => ({
+  askMarketQuestion: vi.fn(),
+  isRouterConfigured: vi.fn(() => false),
+}));
+
+vi.mock("@/lib/safety/content-safety", () => ({
+  analyzeOutboundText: vi
+    .fn()
+    .mockResolvedValue({ allowed: true, status: "analyzed", maxSeverity: 0 }),
+}));
+
 import { classifyIntent } from "@/lib/intent/classify";
 import { routeMessage } from "@/lib/intent/router";
 import type { NormalizedMessage } from "@/lib/handlers/types";
