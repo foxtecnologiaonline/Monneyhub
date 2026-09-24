@@ -3,23 +3,8 @@ import { getRedisConnection } from "@/lib/redis";
 import type { NormalizedMessage } from "@/lib/handlers/types";
 
 export const WHATSAPP_INBOUND_QUEUE = "whatsapp-inbound";
-export const FORECAST_ALERTS_QUEUE = "forecast-alerts";
-
-export interface NegativeBalanceAlert {
-  tenantId: string;
-  userId: string;
-  runId: string;
-  /** Dia previsto em que o saldo (P50) fica negativo. */
-  crossingDate: string;
-  projectedBalance: number;
-  /** Dias de antecedência entre hoje e o cruzamento. */
-  leadDays: number;
-  /** Critério de aceite: alerta com pelo menos 15 dias de antecedência. */
-  meetsLeadTimeTarget: boolean;
-}
 
 let inboundQueue: Queue<NormalizedMessage> | undefined;
-let alertsQueue: Queue<NegativeBalanceAlert> | undefined;
 
 /** Fila de entrada única: o webhook enfileira, o worker classifica e despacha. */
 export function getWhatsappInboundQueue(): Queue<NormalizedMessage> {
@@ -37,18 +22,9 @@ export function getWhatsappInboundQueue(): Queue<NormalizedMessage> {
   return inboundQueue;
 }
 
-/** Alertas proativos de saldo negativo previstos pelo MEI-Oráculo. */
-export function getForecastAlertsQueue(): Queue<NegativeBalanceAlert> {
-  if (!alertsQueue) {
-    alertsQueue = new Queue<NegativeBalanceAlert>(FORECAST_ALERTS_QUEUE, {
-      connection: getRedisConnection(),
-      defaultJobOptions: {
-        attempts: 3,
-        backoff: { type: "exponential", delay: 5000 },
-        removeOnComplete: 1000,
-        removeOnFail: 5000,
-      },
-    });
-  }
-  return alertsQueue;
-}
+// A fila de alerta de saldo negativo (produtor: forecast-weekly.worker.ts,
+// consumidor: forecast-alert.worker.ts) vive em @/lib/mei-oraculo/queue —
+// não duplicar aqui. Esta fila já existiu neste arquivo com nome e formato
+// de payload diferentes (forecast-alerts/NegativeBalanceAlert), órfã de uma
+// sessão concorrente que não chegou a ligar produtor e consumidor; removida
+// nesta revisão pra não deixar duas filas de alerta com o mesmo propósito.

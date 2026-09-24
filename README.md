@@ -176,7 +176,8 @@ Ver [`.env.example`](./.env.example): `DATABASE_URL`, `REDIS_URL`,
 Redis reais como serviços, aplica a migration com `prisma migrate deploy` —
 não só typecheck, é a migration de verdade rodando contra banco novo, o tipo
 de coisa que quebra em silêncio se alguém editar o schema sem gerar migration
-— e então typecheck, lint, testes e build.
+— e então typecheck, lint, testes, `npm run smoke` (integração contra o
+Postgres/Redis do job) e build.
 
 ## Débito técnico conhecido (sinalizado, não bloqueia a entrega)
 
@@ -196,13 +197,13 @@ de coisa que quebra em silêncio se alguém editar o schema sem gerar migration
   consciente pela latência; se a precisão do roteamento virar problema, o
   caminho é um classificador dedicado, não encadear mais uma chamada de LLM
   no caminho crítico.
-- **Sem suíte de integração ponta a ponta contra o processo real** (subir o
-  Next.js, POST assinado no webhook HTTP de verdade, worker consumindo a
-  fila em processo separado, checar a resposta). O CI aplica a migration
-  contra Postgres real e roda a suíte de testes; `npm run smoke` exercita a
-  lógica de negócio contra Postgres/Redis reais, mas chamando as funções
-  diretamente — não através do servidor HTTP nem dos workers como processos
-  separados.
+- **`npm run smoke` roda em todo push (CI), mas chama as funções
+  diretamente** — não sobe o Next.js nem os workers como processo separado,
+  não faz POST HTTP de verdade no webhook. Cobre a lógica de negócio contra
+  Postgres/Redis reais (identificação de tenant, dedup, saldo derivado,
+  previsão, alerta, handler do Zap, memória/LGPD); não cobre a camada HTTP
+  em si (roteamento do Next.js, serialização de resposta) nem os workers
+  como processos long-running de verdade.
 - **Latência de 5s é orçada, não medida.** Os timeouts do handler garantem o
   teto por construção, mas ainda não há medição ponta a ponta com a Router
   API real — fica pra validação em staging.

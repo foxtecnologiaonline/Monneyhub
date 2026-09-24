@@ -62,4 +62,8 @@ jobs:
       - run: npm run typecheck
       - run: npm run lint
       - run: npm test
+
+      - name: Smoke de integração contra Postgres e Redis reais
+        run: npm run smoke
+
       - run: npm run build
