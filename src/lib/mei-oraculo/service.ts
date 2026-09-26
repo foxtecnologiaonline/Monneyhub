@@ -25,13 +25,21 @@ export interface ForecastReport {
   mape: number | null;
 }
 
-interface AccountHistory {
+export interface AccountHistory {
   currency: string;
   balance: number;
   series: DailyNet[];
 }
 
-async function loadHistory(tenantId: string, userId: string): Promise<AccountHistory | null> {
+/**
+ * Exportada (não só uso interno) pra quem precisa da série diária além do
+ * relatório — hoje só o job semanal, pra exportar sem reconsultar as
+ * transações que `buildForecastReport` já buscou.
+ */
+export async function loadAccountHistory(
+  tenantId: string,
+  userId: string,
+): Promise<AccountHistory | null> {
   const account = await prisma.account.findUnique({
     where: { tenantId_userId: { tenantId, userId } },
     select: {
@@ -63,16 +71,11 @@ async function loadHistory(tenantId: string, userId: string): Promise<AccountHis
 }
 
 /**
- * Previsão de saldo em faixa (P10/P50/P90) para 30/60/90 dias, com alerta
- * quando o caminho mediano cruza zero em 30 dias. Sem histórico suficiente
- * o produto não chuta: devolve INSUFFICIENT_HISTORY e nenhuma faixa.
+ * Monta o relatório a partir de um histórico já carregado — sem I/O, pra
+ * quem (o job semanal) precisa da série além do relatório e não pode pagar
+ * a mesma consulta duas vezes.
  */
-export async function buildForecastReport(
-  tenantId: string,
-  userId: string,
-): Promise<ForecastReport> {
-  const history = await loadHistory(tenantId, userId);
-
+export function buildForecastReportFromHistory(history: AccountHistory | null): ForecastReport {
   if (!history) {
     return {
       status: "NO_ACCOUNT",
@@ -118,6 +121,19 @@ export async function buildForecastReport(
     alert: findNegativeBalanceAlert(forecast.medianPath),
     mape: measured.mape,
   };
+}
+
+/**
+ * Previsão de saldo em faixa (P10/P50/P90) para 30/60/90 dias, com alerta
+ * quando o caminho mediano cruza zero em 30 dias. Sem histórico suficiente
+ * o produto não chuta: devolve INSUFFICIENT_HISTORY e nenhuma faixa.
+ */
+export async function buildForecastReport(
+  tenantId: string,
+  userId: string,
+): Promise<ForecastReport> {
+  const history = await loadAccountHistory(tenantId, userId);
+  return buildForecastReportFromHistory(history);
 }
 
 /** Persiste a execução — é o registro que expõe a precisão internamente. */

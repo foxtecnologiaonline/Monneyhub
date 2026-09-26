@@ -1,6 +1,9 @@
 import { prisma } from "@/lib/db";
-import { buildForecastReport, persistForecastRun } from "@/lib/mei-oraculo/service";
-import { buildDailyNetSeries } from "@/lib/mei-oraculo/series";
+import {
+  buildForecastReportFromHistory,
+  loadAccountHistory,
+  persistForecastRun,
+} from "@/lib/mei-oraculo/service";
 import { isExportConfigured, uploadForecastSeries } from "@/lib/mei-oraculo/export";
 import { getForecastAlertQueue } from "@/lib/mei-oraculo/queue";
 
@@ -18,25 +21,18 @@ export async function runWeeklyForecast(): Promise<{ processed: number; alerts: 
   let alerts = 0;
 
   for (const account of accounts) {
-    const report = await buildForecastReport(account.tenantId, account.userId);
+    // Uma consulta só: a série que o export precisa é a mesma que o
+    // relatório já usa internamente — buscar de novo seria dobrar o
+    // round-trip ao banco por conta, todo job semanal.
+    const history = await loadAccountHistory(account.tenantId, account.userId);
+    const report = buildForecastReportFromHistory(history);
 
     let exportKey: string | null = null;
-    if (isExportConfigured()) {
-      const transactions = await prisma.transaction.findMany({
-        where: { account: { tenantId: account.tenantId, userId: account.userId } },
-        orderBy: { occurredAt: "asc" },
-        select: { amount: true, occurredAt: true },
-      });
-
+    if (isExportConfigured() && history) {
       exportKey = await uploadForecastSeries({
         tenantId: account.tenantId,
         userId: account.userId,
-        series: buildDailyNetSeries(
-          transactions.map((item) => ({
-            amount: item.amount.toFixed(2),
-            occurredAt: item.occurredAt,
-          })),
-        ),
+        series: history.series,
       });
     }
 
