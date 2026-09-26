@@ -5,6 +5,20 @@ Escopo completo em [`docs/`](./docs).
 
 ## Fase 0 — Camadas compartilhadas
 
+### Onboarding — tenant e conta
+
+- `POST /api/tenants` — cria um tenant (`{ name, whatsappPhoneNumberId }`).
+  É o primeiro passo: sem tenant, o Gateway não tem contra o que resolver
+  o `phone_number_id` do webhook, e nenhuma mensagem chega a produto nenhum.
+  `409` se o `whatsappPhoneNumberId` já existir.
+- `POST /api/accounts` — vincula uma conta MonneyHub a um usuário (`wa_id`)
+  de um tenant existente (`{ tenantId, userId, name, currency? }`, default
+  `BRL`). `404` se o tenant não existir, `409` se o usuário já tiver conta
+  nesse tenant.
+- Ambos protegidos por `INTERNAL_API_KEY`, mesmo padrão dos outros
+  endpoints internos. Sem isso, onboarding real dependia de `prisma:seed`
+  ou Prisma Studio — inviável fora de dev local.
+
 ### Camada A — Gateway WhatsApp / Roteador de Intenção
 
 - `POST /api/webhooks/whatsapp` — webhook único da Meta Business API: valida
@@ -189,10 +203,10 @@ Postgres/Redis do job) e build.
   precisa trocar para plugar um modelo gerenciado (Forecast/SageMaker)
   quando a decisão de fornecedor fechar; o resto do produto (série, alerta,
   backtest, persistência, handler) não muda.
-- **Provisionamento de tenant e conta é manual** (`prisma:seed` ou Prisma
-  Studio). Não há endpoint/admin ainda pra cadastrar tenant ou vincular
-  número de WhatsApp a conta — o handler responde "conta não encontrada"
-  quando o `wa_id` não bate com nenhuma.
+- **Onboarding via API existe (`POST /api/tenants`, `POST /api/accounts`),
+  mas sem UI nem fluxo automatizado** — alguém (FOX, hoje) ainda precisa
+  chamar os endpoints à mão pra cada cliente novo. Sem provisionamento
+  self-service, e sem endpoint de atualização/remoção (só criação).
 - **Classificação financeira do Zap é por palavra-chave.** Escolha
   consciente pela latência; se a precisão do roteamento virar problema, o
   caminho é um classificador dedicado, não encadear mais uma chamada de LLM
