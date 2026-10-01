@@ -2,140 +2,204 @@
 >
 > **Depende de:** ZapMonney em produção no repo `foxtecnologiaonline/zapscript` (API Fastify + Postgres/Supabase + Evolution API). Não depende da Camada A (Gateway Meta) nem do schema `finance` deste repo — ver §2.
 
-## 6. MonneyHub Hub Visual (interface do ZapMonney)
+## 6. MonneyHub — app/web financeiro (MVP)
 
-**Objetivo:** dar à pessoa uma interface gráfica para o mesmo controle financeiro que ela já faz conversando no WhatsApp, sem que exista qualquer passo de sincronização entre os dois.
+**Objetivo:** o lugar onde a pessoa *vê* e *organiza* o dinheiro dela, com o
+WhatsApp como pista rápida de entrada. Dois produtos, uma conta, um dado.
 
-**Produtos e papéis:**
-
-| | Onde roda | Para quê serve |
+| | Onde roda | O que faz melhor |
 |---|---|---|
-| **ZapMonney** | `zapscript` (API + worker, Evolution API) | captura rápida por conversa: ditar gasto, confirmar, consultar |
-| **MonneyHub** | este repo (Next.js) | ver o mês, corrigir histórico, resolver pendências, comparar |
+| **ZapMonney** | `zapscript` (API + worker, Evolution API) | **capturar**: ditar um gasto em 3 segundos, sem abrir app |
+| **MonneyHub** | este repo (Next.js) | **enxergar e corrigir**: o mês inteiro de uma vez, histórico editável |
 
-### 1. Decisão estrutural: uma fonte da verdade
+Não são duas versões do mesmo produto. São as duas metades de um só: ninguém
+quer preencher formulário no corredor do mercado, e ninguém quer revisar três
+meses de gasto por mensagem de texto.
 
-O dado financeiro vive **só** no Postgres do ZapScript (`ZmUser`, `ZmTransaction`). O MonneyHub é
-**cliente puro** da API do ZapScript — não tem Prisma no caminho da interface, não tem tabela
-espelho, não tem fila de sincronização.
+### 1. Uma fonte da verdade
 
-Isso não é economia de código, é a diferença entre duas classes de problema. Com dois bancos
-escrevendo a mesma linha, "sincronizar" significa resolver conflito, ordem e duplicata: a pessoa
-confirma um lançamento no app enquanto manda outro no WhatsApp, e alguém tem que decidir quem
-ganhou. Com um banco, isso não existe — o app e a conversa leem e escrevem a mesma linha, e a
-simultaneidade é consequência, não feature.
+O dado financeiro vive **só** no Postgres do ZapScript (`ZmUser`,
+`ZmTransaction`). O MonneyHub é cliente da API do ZapScript: sem Prisma no
+caminho da interface, sem tabela espelho, sem fila de sincronização.
+
+Isso não é economia de código, é a escolha entre duas classes de problema. Com
+dois bancos escrevendo a mesma linha, "sincronizar" significa resolver conflito,
+ordem e duplicata — a pessoa confirma um lançamento no app enquanto manda outro
+no WhatsApp, e alguém decide quem ganhou. Com um banco, a simultaneidade é
+consequência de não haver o que reconciliar.
 
 ### 2. Consequência para o que já existe neste repo
 
-A Camada A (Gateway WhatsApp via Meta Business API), o handler `monneyhub-zap` e o schema
-`finance` (`Account`, `Transaction`) **não participam deste produto**. O assistente de WhatsApp
-que vai para produção é o do `zapscript`, que já está no ar e usa Evolution API.
+A Camada A (Gateway Meta), o handler `monneyhub-zap` (**removido**) e o schema
+`finance` não participam deste produto. O assistente de WhatsApp é o do
+`zapscript`, no ar sobre Evolution API.
 
-Nada aqui é removido por este escopo — a Camada C (memória) e o MEI-Oráculo seguem servindo
-`personai`, `sales-agent` e `normas-ia`. Mas fica registrado um ponto a decidir fora deste MVP:
-**o MEI-Oráculo lê `finance.Transaction`, que sob esta decisão não recebe o dado real.** Ou ele
-passa a consumir a API do ZapScript, ou opera sobre outra base. Não é problema do Hub Visual,
-e não deve ser resolvido junto com ele.
+A Camada C (memória) e o MEI-Oráculo seguem servindo `personai`, `sales-agent` e
+`normas-ia`. Fica registrado, fora deste MVP: **o MEI-Oráculo lê
+`finance.Transaction`, que sob esta decisão não recebe o dado real** — ou passa a
+consumir a API do ZapScript, ou opera sobre outra base.
 
-### 3. Autenticação: código pelo próprio WhatsApp
+### 3. O que "integrado e sincronizado" significa, concretamente
 
-Não há senha nem e-mail, porque a identidade do ZapMonney nunca teve: `ZmUser` é o telefone, e a
-prova é a posse do WhatsApp. A interface reaproveita exatamente essa âncora.
+Não há job de sincronização porque não há dois lados para sincronizar. O que
+existe são travessias observáveis:
 
-```
-pessoa digita o telefone no Hub
-  → API do ZapScript gera código de 6 dígitos (Redis, TTL 5min)
-  → envia pelo MESMO número com quem ela já conversa (Evolution)
-  → pessoa digita o código
-  → sessão (JWT audience "zm")
-```
+| A pessoa faz | O outro lado vê |
+|---|---|
+| dita "gastei 50 no mercado" no WhatsApp | o lançamento aparece no app como **pendente**, com selo de "aguardando confirmação" |
+| confirma pelo app (botão) | o "sim" no WhatsApp responde que não há nada pendente — já foi |
+| lança manualmente no app | "qual meu saldo" no WhatsApp já conta esse valor |
+| corrige o valor de um gasto antigo no app | o resumo do mês no WhatsApp muda na mesma consulta |
+| pede "apagar meus dados" em qualquer um dos dois | some dos dois, por cascade |
 
-Elegante porque não inventa canal: já somos donos do WhatsApp dela. E o código chega no lugar
-onde ela está acostumada a receber o resto.
+**A ponte dos pendentes é a prova mais visível da integração** e também o melhor
+uso da interface: confirmar em lote três lançamentos ditados no caminho de casa
+é desconfortável por conversa e trivial por tela.
 
-**Sessão separada da do ZapScript B2B, obrigatoriamente.** O painel atual guarda
-`zs_token`/`zs_refresh` para a identidade `User` (conta paga). `ZmUser` é outro espaço de
-identidade — chave de storage própria e JWT com `audience` próprio. Misturar os dois é criar
-confusão de autenticação entre um produto aberto a qualquer pessoa e o painel de clientes.
+**Tempo real no MVP: não.** O app refaz a busca ao ganhar foco da janela e
+depois de cada alteração — nada de WebSocket. O motivo é que o canal de aviso já
+existe e é melhor: quem precisa ser avisado de algo recebe no WhatsApp. Socket.IO
+para salas `zm:*` é fase 2, se aparecer necessidade real.
 
-### 4. Trabalho no `zapscript` (back-end) — pré-requisito
+### 4. Autenticação: código pelo próprio WhatsApp
 
-Nada disso existe ainda. Em `apps/api/src/routes/zapmonney.ts`, tudo escopado ao `zmUserId` da
-sessão:
-
-```
-POST   /zapmonney/auth/request-code        { phone } → envia OTP via Evolution
-POST   /zapmonney/auth/verify              { phone, code } → { token }
-GET    /zapmonney/me
-GET    /zapmonney/transactions             ?month=&category=&type=&cursor=
-PATCH  /zapmonney/transactions/:id         valor, categoria, descrição, data
-DELETE /zapmonney/transactions/:id         → status 'deleted'
-POST   /zapmonney/transactions/:id/confirm → status 'confirmed'
-POST   /zapmonney/transactions             criação manual (secundária, ver §6)
-GET    /zapmonney/summary                  ?month= → saldo, por categoria, projeção
-DELETE /zapmonney/account                  LGPD, mesmo efeito do "APAGAR TUDO" no chat
-```
-
-Reaproveita o que já está lá: `sendText` (Evolution), `redis`, `prisma`, e as mesmas regras de
-agregação de `zapmonney-executor.ts` — mês fechado em America/São_Paulo, status `confirmed`
-contando no saldo, `pending` fora dele.
-
-**Regra de ouro:** a query filtra por `zmUserId` da sessão, nunca por telefone vindo do request.
-
-### 5. Trabalho neste repo (front-end)
+Sem senha e sem e-mail, porque a identidade do ZapMonney nunca teve: `ZmUser` é o
+telefone e a prova é a posse do WhatsApp.
 
 ```
-src/app/(hub)/
-  layout.tsx            shell do Hub (marca MonneyHub, navegação)
-  login/page.tsx        telefone → código → sessão
-  page.tsx              mês atual: saldo, entradas, saídas, gráfico por categoria
-  lancamentos/page.tsx  lista filtrável, editar e apagar inline
-  pendentes/page.tsx    confirmar em lote o que ficou em aberto
-src/lib/zapscript-api.ts   cliente HTTP (token, refresh, erro)
+telefone no app → API gera código de 6 dígitos (Redis, TTL 5min)
+  → envia pelo MESMO número com quem a pessoa já conversa
+  → código no app → sessão (JWT aud "zm", 7 dias)
 ```
 
-**Guardrail do diretório:** nenhum import de `@prisma/client` dentro de `src/app/(hub)/`. Se
-aparecer, a decisão da §1 foi violada e o produto ganhou um segundo banco sem ninguém decidir.
+Decisões já implementadas em `apps/api/src/routes/zapmonney.ts`:
 
-### 6. Escopo funcional v1
+- **Resposta idêntica exista conta ou não** — senão o endpoint vira um oráculo de
+  "este telefone usa o ZapMonney", que é dado de terceiro.
+- **Teto de 5 tentativas por código** — em 6 dígitos sem teto, um milhão de
+  chutes cabe folgado nos 5 minutos de validade.
+- Código em SHA-256, comparação em tempo constante, cooldown de 60s, teto diário
+  por telefone **e** por IP.
+- **Conta não nasce pela web.** Quem ainda não usa manda a primeira mensagem para
+  o número, onde o consentimento é colhido. A web é porta de entrada de quem já
+  entrou.
+- Sessão com `audience` próprio, jamais o `zs_token` do painel B2B: `ZmUser` é
+  qualquer pessoa com um telefone, `User` é cliente pagante.
 
-**Dentro:**
-- Login por código no WhatsApp
-- Mês atual: saldo, entradas, saídas, gráfico de categorias
-- Lançamentos: lista filtrável por mês, categoria e tipo; editar e apagar
-- Pendentes: confirmar ou descartar, em lote
-- Exclusão de conta (LGPD)
+### 5. Telas do MVP
 
-**Fora (fase 2):** export CSV, orçamento/metas, categorias customizadas, histórico comparativo
-entre meses, PWA instalável, push.
+Mobile-first: a maior parte do uso é no mesmo celular onde está o WhatsApp.
 
-**A interface não imita o chat.** Captura rápida continua sendo do WhatsApp — o valor é ditar
-"gastei 50 no mercado" em três segundos, e nenhum formulário ganha disso. O formulário de
-lançamento manual existe como ação secundária, para quem está no app e não quer trocar de tela.
-O que a interface faz melhor é o inverso: ver o mês inteiro de uma vez, e corrigir coisa antiga
-— que por conversa é péssimo e por tabela é trivial.
+**5.1 Login** (`(hub)/login`) — um campo de telefone, um de código. Estados:
+enviando, código enviado (com contagem para reenviar), código errado (com
+tentativas restantes), bloqueado por tentativas.
 
-### 7. Web, não app de loja
+**5.2 Mês** (`(hub)/`) — a tela inicial.
+- KPI: saldo (figura principal), entradas, saídas
+- Gastos por categoria (ver §6)
+- Selo de pendentes, quando houver, levando para 5.4
+- Seletor de mês
+- Vazio: "você ainda não tem lançamentos neste mês" + como ditar o primeiro
 
-PWA com Next.js, não Expo, no MVP: um código só, sem review de loja, sem pipeline nativo. O
-argumento decisivo é que **o canal de notificação já existe e é melhor** — a pessoa recebe no
-WhatsApp, que no Brasil tem alcance que push de app não tem. Expo entra se aparecer necessidade
-que a web não cubra.
+**5.3 Lançamentos** (`(hub)/lancamentos`) — lista do mês, filtro por categoria e
+tipo, editar e apagar na própria linha. Paginação por cursor.
 
-### 8. Critérios de aceite
+**5.4 Pendentes** (`(hub)/pendentes`) — o que o ZapMonney extraiu e espera
+confirmação. Confirmar ou descartar, individual ou em lote. Mostra o texto
+original ditado ao lado do que foi extraído, para a conferência ser possível.
 
-- Um lançamento confirmado no Hub aparece no "saldo" pedido no WhatsApp na mesma hora, e
-  vice-versa, sem nenhum job de sincronização entre os dois.
-- Nenhuma rota responde dado de um `zmUserId` diferente do da sessão, mesmo recebendo telefone
-  no corpo.
-- OTP: 6 dígitos, TTL de 5 minutos, no máximo 5 tentativas por código, com limite por telefone
-  e por IP.
+**5.5 Conta** (`(hub)/conta`) — nome, telefone, e exclusão total (LGPD) com
+confirmação por frase, igual ao `APAGAR TUDO` da conversa.
+
+**Fora das telas:** captura rápida como ação principal. O formulário de
+lançamento manual existe, secundário — ditar continua sendo o caminho curto.
+
+### 6. Visualização de dados
+
+As escolhas abaixo seguem o método de visualização da casa, e **duas delas
+corrigem o que parecia obvio**:
+
+**Não há rosca nem pizza.** O trabalho do leitor na tela de categorias é
+*comparar magnitude* ("em que eu gasto mais?"), e para isso a forma é **barra
+horizontal ordenada**, não fatia de círculo — comparar ângulos é mais difícil que
+comparar comprimentos, e nomes de categoria caem bem na horizontal. Com dez
+categorias, um círculo fatiado também estouraria qualquer paleta legível.
+
+**Barra com uma hue só, não dez cores.** O comprimento já codifica a magnitude;
+cor não precisa repetir a informação. Dez cores categóricas seriam ilegíveis sob
+daltonismo (acima de 7–8 séries nenhuma paleta se sustenta) e pintariam de
+identidade algo que é só tamanho. Hue única: `#2a78d6` no claro, `#3987e5` no
+escuro.
+
+**Saldo positivo e negativo nunca por cor sozinha.** Verde e vermelho são a
+escolha mais natural num app financeiro e reprovam na verificação de daltonismo
+— `#0ca30c` ↔ `#d03b3b` dão ΔE 4.1 em deuteranopia, bem abaixo do mínimo de 8.
+A cor fica, mas sempre acompanhada de **sinal (+/−) e rótulo**, nunca sozinha.
+
+| Dado | Forma | Cor |
+|---|---|---|
+| saldo, entradas, saídas | KPI / figura principal | tokens de texto + sinal |
+| gastos por categoria | barra horizontal ordenada, rótulo de valor direto | hue única |
+| evolução entre meses (fase 2) | linha, série única, com crosshair | mesma hue |
+| lista de categorias | tabela, sempre disponível | — |
+
+Sem biblioteca de gráfico: duas formas em SVG inline, ~80 linhas, zero
+dependência e controle total do tema claro/escuro. Recharts ainda tem atrito com
+o React 19 deste repo. Se os gráficos crescerem, a decisão se revisita.
+
+Modo escuro é **escolhido**, não inversão automática: valores próprios para a
+superfície escura.
+
+### 7. API (já implementada)
+
+Em `apps/api/src/routes/zapmonney.ts`, prefixo `/zapmonney`, tudo escopado ao
+`zmUserId` da sessão:
+
+```
+POST   /auth/request-code · POST /auth/verify · GET /me
+GET    /transactions ?month=&type=&category=&status=&cursor=&limit=
+POST   /transactions · PATCH /transactions/:id · DELETE /transactions/:id
+POST   /transactions/:id/confirm
+GET    /summary ?month=
+DELETE /account
+```
+
+Alteração e exclusão usam `updateMany` com `zmUserId` no WHERE, não `update` por
+id: a garantia de que ninguém mexe no lançamento de outra pessoa fica no SQL, não
+numa checagem que alguém esquece de repetir na próxima rota.
+
+CORS pela env `EXTRA_ORIGINS` que já existe — o domínio do Hub entra lá.
+
+### 8. Fora do MVP
+
+Export CSV, orçamento e metas, categorias customizadas, evolução entre meses,
+PWA instalável, push próprio, Open Finance (ver §10), app de loja.
+
+### 9. Critérios de aceite
+
+- Um lançamento confirmado no Hub entra no "saldo" pedido no WhatsApp na mesma
+  hora, e vice-versa, sem nenhum job de sincronização.
+- Um pendente criado por voz no WhatsApp aparece no Hub com o texto original ao
+  lado do valor extraído, e pode ser confirmado lá.
+- Nenhuma rota responde dado de `zmUserId` diferente do da sessão, mesmo
+  recebendo telefone no corpo.
 - `src/app/(hub)/` não importa `@prisma/client` em nenhum arquivo.
-- O Hub funciona em largura de celular sem rolagem horizontal.
+- Nenhum estado financeiro é comunicado por cor sozinha.
+- Funciona em largura de celular sem rolagem horizontal, nos dois temas.
 
-### 9. Pendências de decisão
+### 10. Riscos e pendências
 
-- **Domínio do Hub.** Define o CORS da API do ZapScript (hoje serve `zapscript.me`) e o deploy.
-- **Biblioteca de gráfico.** Nenhuma instalada neste repo ainda.
-- **Destino do `monneyhub-zap`.** Fica como experimento parado, ou é desativado explicitamente
-  para ninguém ligar o gateway Meta por engano e criar um segundo assistente no ar?
+- **Dado de mercado.** O ZapMonney tem a lacuna aberta: `api.bcb.gov.br` está
+  bloqueado no ambiente de desenvolvimento e os códigos de série não foram
+  verificados. `src/lib/perplexity/` ficou neste repo, sem consumidor, e resolve
+  exatamente essa lacuna — candidata a porte.
+- **Open Finance não entra.** Pluggy (~R$2,5k/mês) e Belvo (~R$6k/mês) são piso
+  fixo antes do primeiro usuário, num produto gratuito; e custariam o
+  diferencial de não pedir credencial bancária e de funcionar para dinheiro vivo
+  e PIX informal, que Open Finance não enxerga. Enriquecimento opcional no
+  futuro, nunca dependência.
+- **Domínio.** MVP no domínio da Vercel; apontar domínio próprio depois é
+  `EXTRA_ORIGINS` + DNS, não código.
+- **Sessão de 7 dias** em `localStorage` sem rotação de refresh: aceitável
+  porque renovar custa uma ida ao WhatsApp, mas é o primeiro item a endurecer se
+  o produto crescer.
