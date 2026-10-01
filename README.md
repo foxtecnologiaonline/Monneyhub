@@ -35,10 +35,13 @@ Escopo completo em [`docs/`](./docs).
   quando `ANTHROPIC_API_KEY` está configurada, fallback por keyword quando
   não está ou quando a API falha), despacha pro handler do produto certo
   (`src/lib/handlers/`) e envia a resposta via Graph API.
-- Handlers dos 4 produtos conversacionais implementam a interface comum
-  `ProductHandler` (`src/lib/handlers/types.ts`). `monneyhub-zap` está
-  implementado (Fase 1); `sales-agent`, `normas-ia` e `personai` seguem
-  **placeholders** até as fases 2 e 5.
+- Handlers dos 3 produtos conversacionais implementam a interface comum
+  `ProductHandler` (`src/lib/handlers/types.ts`). `sales-agent`, `normas-ia` e
+  `personai` seguem **placeholders** até as fases 2 e 5.
+- **Assunto financeiro não é roteado por este gateway.** O assistente
+  financeiro de WhatsApp é o ZapMonney, no repo
+  `foxtecnologiaonline/zapscript`, já em produção sobre Evolution API — ver
+  [`docs/06-monneyhub-hub-visual.md`](./docs/06-monneyhub-hub-visual.md).
 
 ### Camada C — Serviço de Memória/Contexto do Usuário
 
@@ -98,47 +101,30 @@ Escopo em [`docs/04-monneyhub-mei-oraculo.md`](./docs/04-monneyhub-mei-oraculo.m
 > de fechar a decisão — se não estiver disponível, o SageMaker da Camada B
 > (Fase 3) atende sem mudar o produto em volta.
 
-### MonneyHub Zap — assistente financeiro no WhatsApp
-
-Escopo em [`docs/05-monneyhub-zap.md`](./docs/05-monneyhub-zap.md). O handler
-(`src/lib/handlers/monneyhub-zap.ts`), plugado no Gateway da Camada A, segue
-sempre o mesmo caminho: **classifica → responde → guarda de conteúdo →
-disclaimer**.
-
-- **Sub-classificação** (`src/lib/monneyhub-zap/classify.ts`) separa
-  `BALANCE` / `STATEMENT` / `FORECAST` (dado interno) de `MARKET` (pergunta
-  livre). Determinística por keyword de propósito — é o passo mais barato do
-  fluxo e não pode consumir o orçamento de latência da Router API.
-- **Dado interno** (`src/lib/finance/queries.ts`) lê saldo e extrato. Saldo
-  é **derivado** da soma das transações, não materializado na conta — nunca
-  diverge do extrato. Valores em `Decimal`, não float.
-- **Previsão** vem do MEI-Oráculo (`buildForecastReport`) — nunca da Router
-  API: é pergunta sobre o caixa do próprio usuário.
-- **Dado de mercado** (`src/lib/perplexity/router.ts`) consulta a Perplexity
-  Router API. Endpoint e modelo configuráveis por env.
-- **Guarda de conteúdo** (`src/lib/safety/content-safety.ts`) — Azure AI
-  Content Safety em **toda** resposta antes de enviar. Quando o serviço não
-  responde: texto gerado por modelo é bloqueado (*fail closed*), texto que
-  montamos a partir do banco/MEI-Oráculo passa (*fail open*) — é template
-  nosso, não saída de LLM. Sem credencial: passa em dev, **bloqueia em
-  produção**.
-- **Disclaimer** (`src/lib/monneyhub-zap/disclaimer.ts`) carimba "não é
-  recomendação de investimento" quando a resposta **ou a pergunta** encosta
-  em investimento. Padrão deliberadamente largo: falso positivo custa uma
-  linha, falso negativo custa exposição regulatória.
-
-Critérios de aceite do escopo, e onde estão cobertos:
+Critérios de aceite do MEI-Oráculo, e onde estão cobertos:
 
 | Critério | Onde |
 | --- | --- |
-| 100% das respostas que mencionam investimento levam o disclaimer | `tests/monneyhub-zap-disclaimer.test.ts` |
-| Latência < 5s incluindo Router API | orçamento explícito no handler: Router 3000ms + Content Safety 1200ms, via `AbortSignal.timeout` |
 | Erro percentual médio (MAPE) documentado e exposto internamente | `ForecastRun.mape`, medido por backtest real (`tests/mei-oraculo-backtest.test.ts`) |
 | Alerta de saldo negativo com ≥ 15 dias de antecedência | `meetsLeadRequirement` em `BacktestResult`, validado contra histórico real |
 | Alerta entregue ao usuário, não só detectado | `src/workers/forecast-alert.worker.ts` — consome `forecast-alert` e envia via Graph API |
 
-Fora de escopo no v1, conforme os docs: transação financeira real (PIX,
-pagamento) e recomendação automática de ação financeira.
+### Assistente financeiro no WhatsApp — fora deste repo
+
+O handler `monneyhub-zap` **foi removido**. O assistente financeiro de WhatsApp
+é o **ZapMonney**, no repo `foxtecnologiaonline/zapscript`, já em produção sobre
+Evolution API, com o dado em `ZmUser`/`ZmTransaction`. Manter um handler
+financeiro aqui significaria um segundo assistente no ar, sobre outro banco,
+respondendo a mesma pessoa.
+
+A interface gráfica desse produto é o **MonneyHub Hub Visual**, que mora neste
+repo em `src/app/(hub)/` como cliente puro da API do ZapScript — escopo em
+[`docs/06-monneyhub-hub-visual.md`](./docs/06-monneyhub-hub-visual.md).
+
+Duas bibliotecas ficaram sem consumidor com a remoção, mantidas de propósito:
+`src/lib/safety/` (Azure AI Content Safety — guarda transversal, útil a
+qualquer produto) e `src/lib/perplexity/` (Router API — resolve exatamente a
+lacuna de dado de mercado que o ZapMonney tem aberta, candidata a porte).
 
 ## Setup
 

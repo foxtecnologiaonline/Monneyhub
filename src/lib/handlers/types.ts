@@ -22,4 +22,4 @@ export interface HandlerResponse {
 
 export type ProductHandler = (message: NormalizedMessage) => Promise<HandlerResponse>;
 
-export type ProductName = "sales-agent" | "monneyhub-zap" | "normas-ia" | "personai";
+export type ProductName = "sales-agent" | "normas-ia" | "personai";

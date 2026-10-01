@@ -3,7 +3,7 @@ import { zodOutputFormat } from "@anthropic-ai/sdk/helpers/zod";
 import { z } from "zod";
 import type { ProductName } from "@/lib/handlers/types";
 
-const PRODUCTS = ["sales-agent", "monneyhub-zap", "normas-ia", "personai"] as const;
+const PRODUCTS = ["sales-agent", "normas-ia", "personai"] as const;
 
 const ClassificationSchema = z.object({
   product: z.enum(PRODUCTS),
@@ -11,10 +11,6 @@ const ClassificationSchema = z.object({
 
 const PRODUCT_DESCRIPTIONS: Record<ProductName, string> = {
   "sales-agent": "qualificação e atendimento comercial a leads/prospects",
-  "monneyhub-zap":
-    "qualquer assunto financeiro: saldo, extrato, lançamentos e previsão de fluxo de caixa " +
-    "do MEI, e também pergunta livre sobre mercado e finanças pessoais (CDI, Selic, juros, " +
-    "inflação, investimento, dólar)",
   "normas-ia": "dúvidas sobre normas regulatórias e compliance",
   personai: "assistente pessoal de propósito geral, com memória de contexto do usuário",
 };
@@ -72,16 +68,13 @@ async function classifyWithClaude(text: string): Promise<ProductName> {
 export function classifyByKeyword(text: string): ProductName {
   const lower = text.toLowerCase();
 
-  // Normas antes de finanças: "norma do MEI" é regulatório, não financeiro.
   if (/(norma|regulament|compliance|licença|fiscaliza)/.test(lower)) return "normas-ia";
 
-  if (
-    /(saldo|fluxo de caixa|extrato|lançamento|previs|\bmei\b|\bcdi\b|selic|juros|inflação|investi|aplicaç|rendiment|poupança|tesouro direto|\bcdb\b|dólar|câmbio)/.test(
-      lower,
-    )
-  ) {
-    return "monneyhub-zap";
-  }
+  // Assunto financeiro NÃO tem regra aqui, e a ausência é a decisão: o
+  // assistente financeiro é o ZapMonney, noutro repo e noutro canal (Evolution
+  // API), sobre o banco onde o dado realmente vive. Rotear finança neste gateway
+  // exigiria um handler que leria um segundo banco — ver handlers/index.ts.
+  // Sem regra, cai no 'personai' como qualquer outro assunto geral.
 
   if (/(orçamento|comprar|preço|plano|proposta|contratar)/.test(lower)) return "sales-agent";
 

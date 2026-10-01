@@ -8,16 +8,14 @@ const calls: string[] = [];
 vi.mock("@/lib/handlers/index", () => ({
   productHandlers: {
     "sales-agent": vi.fn(async () => stub("sales-agent")),
-    "monneyhub-zap": vi.fn(async () => stub("monneyhub-zap")),
     "normas-ia": vi.fn(async () => stub("normas-ia")),
     personai: vi.fn(async () => stub("personai")),
   },
 }));
 
 // productHandlers inteiro já é mockado acima — o roteador é testado pelo
-// despacho, não pela lógica interna de cada produto (essa tem teste próprio
-// em tests/monneyhub-zap-handler.test.ts). Sem isso, o teste de roteamento
-// acabaria batendo em Postgres/Perplexity/Content Safety de verdade.
+// despacho, não pela lógica interna de cada produto. Sem isso, o teste de
+// roteamento acabaria batendo em Postgres de verdade.
 function stub(product: string) {
   calls.push(product);
   return { replyText: `resposta de ${product}`, meta: { product } };
@@ -32,7 +30,7 @@ const baseMessage: NormalizedMessage = {
   phoneNumberId: "1234567890",
   userId: "5511999990000",
   messageId: "wamid.teste",
-  text: "qual meu saldo?",
+  text: "essa norma de compliance mudou?",
   timestamp: new Date().toISOString(),
   raw: {},
 };
@@ -44,17 +42,17 @@ beforeEach(() => {
 
 describe("routeMessage", () => {
   it("despacha pro handler do produto classificado", async () => {
-    vi.mocked(classifyIntent).mockResolvedValue("monneyhub-zap");
+    vi.mocked(classifyIntent).mockResolvedValue("normas-ia");
 
     const result = await routeMessage(baseMessage);
 
-    expect(result.product).toBe("monneyhub-zap");
-    expect(calls).toEqual(["monneyhub-zap"]);
+    expect(result.product).toBe("normas-ia");
+    expect(calls).toEqual(["normas-ia"]);
     expect(result.response.replyText).toBeTruthy();
   });
 
-  it("despacha pra cada um dos quatro produtos suportados", async () => {
-    const products = ["sales-agent", "monneyhub-zap", "normas-ia", "personai"] as const;
+  it("despacha pra cada um dos três produtos suportados", async () => {
+    const products = ["sales-agent", "normas-ia", "personai"] as const;
 
     for (const product of products) {
       vi.mocked(classifyIntent).mockResolvedValue(product);

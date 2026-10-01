@@ -2,9 +2,12 @@ import { describe, expect, it, beforeEach, afterAll } from "vitest";
 import { classifyByKeyword, classifyIntent } from "@/lib/intent/classify";
 
 describe("classifyByKeyword", () => {
-  it("identifica monneyhub-zap por termos financeiros", () => {
-    expect(classifyByKeyword("qual meu saldo hoje?")).toBe("monneyhub-zap");
-    expect(classifyByKeyword("preciso do extrato do MEI")).toBe("monneyhub-zap");
+  // Finança não tem regra aqui de propósito: o assistente financeiro é o
+  // ZapMonney, noutro repo e noutro canal. Este teste existe para a remoção não
+  // ser revertida sem alguém ler o porquê.
+  it("não roteia assunto financeiro para produto nenhum deste gateway", () => {
+    expect(classifyByKeyword("qual meu saldo hoje?")).toBe("personai");
+    expect(classifyByKeyword("preciso do extrato do MEI")).toBe("personai");
   });
 
   it("identifica normas-ia por termos regulatórios", () => {
@@ -32,6 +35,6 @@ describe("classifyIntent", () => {
   });
 
   it("usa o fallback por keyword quando não há ANTHROPIC_API_KEY", async () => {
-    await expect(classifyIntent("qual meu saldo?")).resolves.toBe("monneyhub-zap");
+    await expect(classifyIntent("essa norma de compliance mudou?")).resolves.toBe("normas-ia");
   });
 });

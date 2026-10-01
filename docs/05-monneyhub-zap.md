@@ -1,8 +1,30 @@
+# ⚠️ SUPERADO — não implementar
+
+O código deste escopo foi **removido** deste repo. O assistente financeiro de
+WhatsApp é o **ZapMonney**, no repo `foxtecnologiaonline/zapscript`, já em
+produção sobre Evolution API, com o dado em `ZmUser`/`ZmTransaction`.
+
+Dois assistentes financeiros no ar, sobre bancos diferentes, respondendo a mesma
+pessoa, não é redundância: é duas verdades sobre quanto ela gastou.
+
+O que sobrevive deste escopo, e onde:
+
+- a **interface gráfica** virou o MonneyHub Hub Visual — [`06-monneyhub-hub-visual.md`](./06-monneyhub-hub-visual.md);
+- as decisões de **guarda de conteúdo** e **disclaimer de investimento** foram
+  portadas para o ZapMonney, no repo `zapscript`;
+- `src/lib/safety/` e `src/lib/perplexity/` ficaram no repo, sem consumidor —
+  a segunda resolve a lacuna de dado de mercado que o ZapMonney tem aberta.
+
+Este arquivo fica como registro da decisão, não como plano. O conteúdo original
+segue abaixo.
+
+---
+
 > **Contexto padrão FOX TecnologIA:** React Native/Expo, Next.js, PostgreSQL, BullMQ+Redis, S3/R2, Claude Sonnet como IA primária (Bedrock só como fallback), multi-tenant desde o MVP, LGPD desde o dia 1.
 >
 > **Depende de:** Camada A — Gateway WhatsApp/Roteador de Intenção — ver `00-visao-geral-e-camadas-compartilhadas.md`.
 
-## 5. MonneyHub Zap (assistente financeiro no Zap)
+## 5. MonneyHub Zap (assistente financeiro no Zap) — SUPERADO
 
 **Objetivo:** levar o MonneyHub pro WhatsApp como assistente conversacional que responde com dado de mercado atualizado, não só saldo interno.
 

@@ -14,7 +14,6 @@ import { claimWhatsAppMessage } from "@/lib/whatsapp/dedupe";
 import { buildForecastReport, persistForecastRun } from "@/lib/mei-oraculo/service";
 import { readMemory, writeMemory, deleteAllMemory } from "@/lib/memory/service";
 import { findTenantsByPhoneNumberIds } from "@/lib/tenant";
-import { monneyhubZapHandler } from "@/lib/handlers/monneyhub-zap";
 import type { NormalizedMessage } from "@/lib/handlers/types";
 
 const suffix = randomUUID().slice(0, 8);
@@ -151,37 +150,11 @@ async function main(): Promise<void> {
   });
   check("rodada persistida com MAPE gravado", persisted?.mape !== null && persisted?.mape !== undefined);
 
-  console.log("\n[5] MonneyHub Zap — handler real contra o banco");
-  const saldo = await monneyhubZapHandler(message("qual meu saldo?", tenant.id, veteran));
-  check("responde saldo formatado em reais", saldo.replyText.includes("4.200,50"), saldo.replyText);
+  // O passo [5] cobria o handler monneyhub-zap, removido: o assistente
+  // financeiro de WhatsApp é o ZapMonney, no repo zapscript, com os próprios
+  // testes lá. Ver docs/06-monneyhub-hub-visual.md.
 
-  const extrato = await monneyhubZapHandler(message("me manda o extrato", tenant.id, veteran));
-  check("responde extrato com lançamentos", extrato.replyText.includes("R$"), extrato.replyText);
-
-  const previsao = await monneyhubZapHandler(
-    message("qual a previsão do meu fluxo de caixa?", tenant.id, veteran),
-  );
-  check("responde previsão em faixa", previsao.replyText.includes("dias"), previsao.replyText);
-
-  const semDado = await monneyhubZapHandler(
-    message("qual a previsão do meu fluxo de caixa?", tenant.id, novato),
-  );
-  check(
-    "usuário sem histórico recebe aviso de dado insuficiente",
-    semDado.replyText.includes("Ainda não dá"),
-    semDado.replyText,
-  );
-
-  const semConta = await monneyhubZapHandler(
-    message("qual meu saldo?", tenant.id, `sem-conta-${suffix}`),
-  );
-  check(
-    "usuário sem conta vinculada recebe aviso, não erro",
-    semConta.replyText.includes("Não encontrei uma conta"),
-    semConta.replyText,
-  );
-
-  console.log("\n[6] Memória — escrita, leitura e exclusão total (LGPD)");
+  console.log("\n[5] Memória — escrita, leitura e exclusão total (LGPD)");
   await writeMemory({
     tenantId: tenant.id,
     userId: veteran,
@@ -222,7 +195,7 @@ async function main(): Promise<void> {
   check("exclusão total apaga tudo", deleted.deleted === 3, `(${deleted.deleted})`);
   check("nada sobra depois da exclusão", (await readMemory(tenant.id, veteran)).length === 0);
 
-  console.log("\n[7] Limpeza");
+  console.log("\n[6] Limpeza");
   await prisma.forecastRun.deleteMany({ where: { tenantId: tenant.id } });
   await prisma.account.deleteMany({ where: { tenantId: tenant.id } }); // cascade em Transaction
   await prisma.tenant.delete({ where: { id: tenant.id } });
