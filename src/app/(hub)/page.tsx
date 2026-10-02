@@ -44,11 +44,20 @@ export default function MonthPage() {
   // canal de aviso de verdade continua sendo o próprio WhatsApp.
   useEffect(() => {
     if (!ready) return;
+    // O mesmo descarte do efeito acima, e pelo mesmo motivo: o fetch disparado
+    // pelo foco não é cancelável, e sem a flag a resposta do mês velho chega
+    // depois da troca de mês e repinta a tela com o período errado.
+    let cancelled = false;
     const onFocus = () => {
-      void api.summary(month).then((next) => apply(next)).catch((err) => apply(null, err));
+      void api.summary(month)
+        .then((next) => { if (!cancelled) apply(next); })
+        .catch((err) => { if (!cancelled) apply(null, err); });
     };
     window.addEventListener('focus', onFocus);
-    return () => window.removeEventListener('focus', onFocus);
+    return () => {
+      cancelled = true;
+      window.removeEventListener('focus', onFocus);
+    };
   }, [ready, month, apply]);
 
   if (!ready) return null;

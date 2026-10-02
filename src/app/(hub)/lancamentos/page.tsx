@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { api, ApiError, ZM_CATEGORIES, type ZmTransaction } from '@/lib/zapscript-api';
 import { useRequireAuth } from '../_lib/useAuth';
 import { fmtBRL, fmtDay, toDateInput, currentMonth, shiftMonth, fmtMonth, parseMoneyInput } from '../_lib/format';
@@ -14,6 +14,15 @@ export default function TransactionsPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [editing, setEditing] = useState<ZmTransaction | null>(null);
+  // A API pagina em 50 por vez e devolve `nextCursor`. Ignorar o cursor mostrava
+  // uma lista TRUNCADA calada: num mês com 70 lançamentos faltavam 20 e nada na
+  // tela dizia isso — num app de dinheiro, lista incompleta lê como dado perdido.
+  const [cursor, setCursor] = useState<string | null>(null);
+  const [loadingMore, setLoadingMore] = useState(false);
+  // Bump depois de salvar: a linha editada pode ter saído do mês ou da categoria
+  // filtrada, e remendar `rows` na mão a deixaria visível numa lista onde o
+  // servidor já não a devolve.
+  const [reload, setReload] = useState(0);
 
   // `cancelled` descarta resposta obsoleta: trocar filtro ou mês rápido pode
   // fazer a busca antiga chegar depois da nova e repintar a lista errada.
@@ -25,6 +34,7 @@ export default function TransactionsPage() {
         const r = await api.transactions({ month, type: type || undefined, category: category || undefined });
         if (cancelled) return;
         setRows(r.transactions);
+        setCursor(r.nextCursor);
         setError(null);
       } catch (err) {
         if (cancelled) return;
@@ -34,7 +44,29 @@ export default function TransactionsPage() {
       }
     })();
     return () => { cancelled = true; };
-  }, [ready, month, type, category]);
+  }, [ready, month, type, category, reload]);
+
+  async function loadMore() {
+    if (!cursor) return;
+    setLoadingMore(true);
+    try {
+      const r = await api.transactions({
+        month, type: type || undefined, category: category || undefined, cursor,
+      });
+      // Concatena por id: o filtro pode ter mudado embaixo da página seguinte, e
+      // repetir uma linha duplicaria a chave do React e o valor na leitura.
+      setRows((rs) => {
+        const seen = new Set(rs.map((r2) => r2.id));
+        return [...rs, ...r.transactions.filter((t) => !seen.has(t.id))];
+      });
+      setCursor(r.nextCursor);
+      setError(null);
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Não consegui carregar mais lançamentos.');
+    } finally {
+      setLoadingMore(false);
+    }
+  }
 
   async function remove(tx: ZmTransaction) {
     // Apagar lançamento é destrutivo e irreversível pela interface: confirma.
@@ -103,15 +135,21 @@ export default function TransactionsPage() {
             </div>
           </div>
         ))}
+
+        {cursor && (
+          <button className="btn" type="button" onClick={loadMore} disabled={loadingMore} style={{ marginTop: 12 }}>
+            {loadingMore ? 'Carregando…' : 'Carregar mais'}
+          </button>
+        )}
       </div>
 
       {editing && (
         <EditDialog
           tx={editing}
           onClose={() => setEditing(null)}
-          onSaved={(updated) => {
-            setRows((rs) => rs.map((r) => (r.id === updated.id ? updated : r)));
+          onSaved={() => {
             setEditing(null);
+            setReload((r) => r + 1);
           }}
         />
       )}
@@ -124,7 +162,7 @@ function EditDialog({
 }: {
   tx: ZmTransaction;
   onClose: () => void;
-  onSaved: (tx: ZmTransaction) => void;
+  onSaved: () => void;
 }) {
   const [amount, setAmount] = useState(tx.amount);
   const [category, setCategory] = useState(tx.category);
@@ -141,13 +179,17 @@ function EditDialog({
     setBusy(true);
     setError(null);
     try {
-      const updated = await api.updateTransaction(tx.id, {
+      await api.updateTransaction(tx.id, {
         amount: value,
         category,
         description: description.trim() || null,
-        occurredAt: date,
+        // A API valida `occurredAt` contra YYYY-MM-DD e recusa a alteração
+        // INTEIRA se vier vazia. Campo de data limpo mandava '' e devolvia 400,
+        // perdendo também o valor que a pessoa veio corrigir — sem data, a data
+        // simplesmente não entra no patch.
+        ...(date ? { occurredAt: date } : {}),
       });
-      onSaved(updated);
+      onSaved();
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Não consegui salvar.');
     } finally {

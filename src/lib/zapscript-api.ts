@@ -15,6 +15,37 @@ const BASE = (process.env.NEXT_PUBLIC_ZAPSCRIPT_API_URL || '').replace(/\/$/, ''
  */
 const TOKEN_KEY = 'mh_token';
 
+/**
+ * O evento 'storage' do navegador só chega nas OUTRAS abas, nunca na que mexeu
+ * no localStorage. Quem muda o token na própria aba — login, logout e o 401 do
+ * `request` — precisa avisar à mão, senão `useToken` não reage e a sessão morta
+ * fica na tela até alguém recarregar a página.
+ */
+const tokenListeners = new Set<() => void>();
+
+export function onTokenChange(fn: () => void): () => void {
+  tokenListeners.add(fn);
+  return () => { tokenListeners.delete(fn); };
+}
+
+function notifyTokenChange(): void {
+  tokenListeners.forEach((fn) => fn());
+}
+
+/**
+ * `ZmUser.phone` guarda os dígitos do JID do WhatsApp, com DDI: `5511988887777`.
+ * O formulário pede "telefone com DDD", então sem o 55 o `findUnique` da API não
+ * acha ninguém — e como `/auth/request-code` responde igual exista conta ou não,
+ * o login falharia calado, sem código nenhum chegando no WhatsApp.
+ *
+ * A decisão é por COMPRIMENTO e não por "começa com 55": o DDD 55 existe (Santa
+ * Maria/RS) e um número de lá nunca receberia o prefixo.
+ */
+export function normalizePhone(raw: string): string {
+  const digits = (raw || '').replace(/\D/g, '');
+  return digits.length === 10 || digits.length === 11 ? `55${digits}` : digits;
+}
+
 export class ApiError extends Error {
   constructor(public status: number, message: string) {
     super(message);
@@ -38,6 +69,7 @@ export function setToken(token: string): void {
   } catch {
     /* sessão não persiste, mas a navegação atual funciona */
   }
+  notifyTokenChange();
 }
 
 export function clearToken(): void {
@@ -46,6 +78,7 @@ export function clearToken(): void {
   } catch {
     /* nada a fazer */
   }
+  notifyTokenChange();
 }
 
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
@@ -67,9 +100,12 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
     throw new ApiError(0, 'Sem conexão com o servidor. Tenta de novo em instantes.');
   }
 
-  // 401 = sessão expirada ou revogada. Limpa o token aqui para a próxima
-  // navegação já cair no login, em vez de ficar tentando com credencial morta.
-  if (res.status === 401) {
+  // 401 COM token = sessão expirada ou revogada. Limpa o token aqui (e avisa os
+  // ouvintes) para a navegação cair no login em vez de insistir com credencial
+  // morta. Sem token é /auth/verify recusando o código: ali a mensagem da API
+  // ("Código inválido ou expirado") é a certa, e dizer "sessão expirada" para
+  // quem está justo criando uma sessão só confunde.
+  if (res.status === 401 && token) {
     clearToken();
     throw new ApiError(401, 'Sessão expirada. Entra de novo.');
   }
@@ -116,16 +152,19 @@ export interface ZmProfile {
 // ── Endpoints ────────────────────────────────────────────────────────────────
 
 export const api = {
+  // Normaliza aqui, e não na tela, para as duas chamadas mandarem exatamente o
+  // mesmo número: a chave do OTP no Redis é o telefone, e divergir entre pedir e
+  // verificar faria o código certo ser recusado.
   requestCode: (phone: string) =>
     request<{ ok: boolean; message: string }>('/auth/request-code', {
       method: 'POST',
-      body: JSON.stringify({ phone }),
+      body: JSON.stringify({ phone: normalizePhone(phone) }),
     }),
 
   verify: (phone: string, code: string) =>
     request<{ token: string; user: ZmProfile }>('/auth/verify', {
       method: 'POST',
-      body: JSON.stringify({ phone, code }),
+      body: JSON.stringify({ phone: normalizePhone(phone), code }),
     }),
 
   me: () => request<ZmProfile>('/me'),

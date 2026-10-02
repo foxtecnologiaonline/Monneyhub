@@ -3,6 +3,7 @@ import {
   fmtBRL, signedBalance, fmtDay, toDateInput, fmtMonth,
   currentMonth, shiftMonth, parseMoneyInput,
 } from '@/app/(hub)/_lib/format';
+import { normalizePhone } from '@/lib/zapscript-api';
 
 /**
  * O que estes testes protegem, em ordem de dano: valor errado na tela, data
@@ -113,5 +114,26 @@ describe('parseMoneyInput — o que a pessoa digita', () => {
     expect(parseMoneyInput('')).toBeNull();
     expect(parseMoneyInput('0')).toBeNull();
     expect(parseMoneyInput('abc')).toBeNull();
+  });
+});
+
+describe('normalizePhone — o número que a API procura', () => {
+  // `ZmUser.phone` guarda os dígitos do JID do WhatsApp, COM DDI. Sem o 55 o
+  // findUnique não acha ninguém, e /auth/request-code responde igual exista
+  // conta ou não: o login falharia calado, sem código chegando no WhatsApp.
+  it('põe o DDI 55 no que veio só com DDD', () => {
+    expect(normalizePhone('11 98888-7777')).toBe('5511988887777');
+    expect(normalizePhone('(11) 3333-4444')).toBe('551133334444');
+  });
+
+  it('não duplica o DDI de quem já digitou completo', () => {
+    expect(normalizePhone('+55 11 98888-7777')).toBe('5511988887777');
+    expect(normalizePhone('5511988887777')).toBe('5511988887777');
+  });
+
+  it('decide por comprimento, não por "começa com 55"', () => {
+    // DDD 55 é Santa Maria/RS: por prefixo, este número nunca ganharia o DDI.
+    expect(normalizePhone('55 99999-8888')).toBe('5555999998888');
+    expect(normalizePhone('55 3333-4444')).toBe('555533334444');
   });
 });

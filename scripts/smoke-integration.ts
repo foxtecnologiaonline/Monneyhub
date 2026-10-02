@@ -14,7 +14,6 @@ import { claimWhatsAppMessage } from "@/lib/whatsapp/dedupe";
 import { buildForecastReport, persistForecastRun } from "@/lib/mei-oraculo/service";
 import { readMemory, writeMemory, deleteAllMemory } from "@/lib/memory/service";
 import { findTenantsByPhoneNumberIds } from "@/lib/tenant";
-import type { NormalizedMessage } from "@/lib/handlers/types";
 
 const suffix = randomUUID().slice(0, 8);
 const phoneNumberId = `smoke-${suffix}`;
@@ -37,18 +36,6 @@ function daysAgo(days: number): Date {
   date.setUTCDate(date.getUTCDate() - days);
   date.setUTCHours(0, 0, 0, 0);
   return date;
-}
-
-function message(text: string, tenantId: string, userId: string): NormalizedMessage {
-  return {
-    tenantId,
-    phoneNumberId,
-    userId,
-    messageId: `wamid.${randomUUID()}`,
-    text,
-    timestamp: new Date().toISOString(),
-    raw: {},
-  };
 }
 
 async function main(): Promise<void> {

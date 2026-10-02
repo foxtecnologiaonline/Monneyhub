@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { api, ApiError, type ZmTransaction } from '@/lib/zapscript-api';
 import { useRequireAuth } from '../_lib/useAuth';
 import { fmtBRL, fmtDay, currentMonth } from '../_lib/format';
